@@ -1,0 +1,24 @@
+{
+  "name": "project-q",
+  "version": "1.0.0",
+  "description": "AI-powered development workflow agent with Kanban — inspired by BMAD Method",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "install:all": "npm install && npm install --workspace=server && npm install --workspace=client",
+    "dev": "concurrently \"npm run dev --workspace=server\" \"npm run dev --workspace=client\"",
+    "build": "cd client && npx vite build",
+    "start": "npm run start --workspace=server",
+    "setup": "node bin/setup.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "bin": {
+    "pq": "./bin/pq.js",
+    "project-q": "./bin/pq.js"
+  }
+}
