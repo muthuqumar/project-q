@@ -2,6 +2,23 @@ const express = require('express')
 const router = express.Router()
 const fs = require('fs-extra')
 const path = require('path')
+const multer = require('multer')
+const { syncContextToCLAUDEMD } = require('../services/context-sync')
+
+const ALLOWED_EXTENSIONS = new Set(['.md', '.txt', '.json', '.yaml', '.yml'])
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    if (ALLOWED_EXTENSIONS.has(ext)) {
+      cb(null, true)
+    } else {
+      cb(Object.assign(new Error(`File type not allowed: ${ext}`), { status: 400 }))
+    }
+  }
+})
 
 // GET /api/context — list all context files
 router.get('/', async (req, res) => {
@@ -46,12 +63,15 @@ router.get('/:filename', async (req, res) => {
 // PUT /api/context/:filename — update a context file
 router.put('/:filename', async (req, res) => {
   const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
   const filePath = path.join(pqDir, 'context', req.params.filename)
   const { content } = req.body
 
   try {
     await fs.writeFile(filePath, content, 'utf8')
     req.app.get('io').emit('context:updated', { filename: req.params.filename })
+    // Regenerate CLAUDE.md so Claude CLI picks up the change immediately
+    syncContextToCLAUDEMD(projectDir, pqDir).catch(e => console.error('[context-sync]', e.message))
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -91,6 +111,38 @@ router.put('/config/update', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+// POST /api/context/upload — upload one or more context files
+router.post('/upload', (req, res) => {
+  upload.array('files', 10)(req, res, async (err) => {
+    if (err) {
+      return res.status(err.status || 400).json({ error: err.message })
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' })
+    }
+
+    const pqDir = req.app.get('pqDir')
+    const io = req.app.get('io')
+
+    try {
+      const uploaded = []
+      for (const file of req.files) {
+        const destPath = path.join(pqDir, 'context', file.originalname)
+        await fs.outputFile(destPath, file.buffer)
+        io.emit('context:updated', { filename: file.originalname })
+        uploaded.push({ filename: file.originalname, size: file.size })
+      }
+      // Regenerate CLAUDE.md with new files included
+      const projectDir = req.app.get('projectDir')
+      syncContextToCLAUDEMD(projectDir, pqDir).catch(e => console.error('[context-sync]', e.message))
+      res.json({ uploaded })
+    } catch (writeErr) {
+      res.status(500).json({ error: writeErr.message })
+    }
+  })
 })
 
 module.exports = router

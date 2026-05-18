@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Zap, GitBranch, CheckCircle, Clock, AlertCircle, FileText, Settings, LayoutDashboard, ChevronRight, Loader } from 'lucide-react'
+import { Zap, GitBranch, CheckCircle, Clock, AlertCircle, FileText, Settings, LayoutDashboard, ChevronRight, Loader, Database } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useStore } from '../store'
@@ -121,10 +121,21 @@ export default function Dashboard() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
               <InfoRow label="AI" value={`${config?.ai?.provider} / ${config?.ai?.model?.split('-').slice(-1)[0]}`} />
               <InfoRow label="Directory" value={config?.projectDir?.split('/').pop()} mono />
-              {context?.PRD && (
-                <InfoRow label="Context" value="PRD, Architecture, Tech Stack" />
-              )}
+              <InfoRow
+                label="Context"
+                value={context?.['PRD.md'] ? 'PRD · Architecture · Tech Stack' : 'Not generated'}
+                warn={!context?.['PRD.md']}
+              />
             </div>
+            {!context?.['PRD.md'] && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => navigate('/context')}
+                style={{ marginTop: '10px', width: '100%', justifyContent: 'center', gap: '6px', fontSize: '11px', borderColor: 'var(--yellow)', color: 'var(--yellow)' }}
+              >
+                <Database size={11} /> Scan & generate context
+              </button>
+            )}
           </div>
 
           {/* PRD excerpt */}
@@ -203,12 +214,12 @@ function ColumnBadge({ column }) {
   )
 }
 
-function InfoRow({ label, value, mono }) {
+function InfoRow({ label, value, mono, warn }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
       <span style={{ color: 'var(--text-muted)' }}>{label}</span>
       <span style={{
-        color: 'var(--text-secondary)',
+        color: warn ? 'var(--yellow)' : 'var(--text-secondary)',
         fontFamily: mono ? 'var(--font-mono)' : 'inherit',
         fontSize: mono ? '11px' : '12px',
         maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'

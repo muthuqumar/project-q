@@ -6,6 +6,7 @@ import KanbanPage from './pages/KanbanPage'
 import WorkflowsPage from './pages/WorkflowsPage'
 import SettingsPage from './pages/SettingsPage'
 import ContextPage from './pages/ContextPage'
+import OrchestratorPage from './pages/OrchestratorPage'
 import { useProject } from './hooks/useProject'
 import { useSocket } from './hooks/useSocket'
 import { useStore } from './store'
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="workflows" element={<WorkflowsPage />} />
           <Route path="workflows/:id" element={<WorkflowsPage />} />
           <Route path="context" element={<ContextPage />} />
+          <Route path="orchestrator" element={<OrchestratorPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

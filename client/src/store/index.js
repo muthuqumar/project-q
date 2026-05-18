@@ -87,6 +87,10 @@ export const useStore = create((set, get) => ({
       }
     })),
 
+  // ── Missions ──────────────────────────────────────────────────────────────
+  activeMissionCount: 0,
+  setActiveMissionCount: (n) => set({ activeMissionCount: n }),
+
   // ── UI ─────────────────────────────────────────────────────────────────────
   sidebarOpen: true,
   activeTab: 'dashboard',

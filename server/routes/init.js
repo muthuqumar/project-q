@@ -4,22 +4,27 @@ const fs = require('fs-extra')
 const path = require('path')
 const { v4: uuidv4 } = require('uuid')
 const AIService = require('../services/ai')
+const { syncContextToCLAUDEMD } = require('../services/context-sync')
 
 // GET /api/init/status — check if project is initialized
 router.get('/status', async (req, res) => {
   const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
   const configPath = path.join(pqDir, 'config.json')
 
   if (!fs.existsSync(configPath)) {
-    return res.json({ initialized: false })
+    return res.json({ initialized: false, projectDir })
   }
 
   const config = await fs.readJson(configPath)
+  // Always reflect the live projectDir (env var may differ from saved config)
+  config.projectDir = projectDir
   const contextFiles = await fs.readdir(path.join(pqDir, 'context')).catch(() => [])
 
   res.json({
     initialized: true,
     config,
+    projectDir,
     hasContext: contextFiles.length > 0,
     contextFiles
   })
@@ -42,6 +47,9 @@ router.post('/start', async (req, res) => {
       workflows: ['dev-now', 'feature-dev', 'greenfield', 'brownfield-feature', 'bug-fix']
     }
     await fs.writeJson(path.join(pqDir, 'config.json'), config, { spaces: 2 })
+
+    // Make aiConfig available to orchestrator
+    req.app.set('aiConfig', config.ai)
 
     res.json({ success: true, message: 'Project-q initialized. Ready for context generation.' })
   } catch (err) {
@@ -85,6 +93,9 @@ router.post('/generate-context', async (req, res) => {
     emit('progress', { step: 'personas', message: 'Generating Agent Personas...' })
     const personas = await ai.complete(buildPersonasPrompt(answers, scanResult, prd))
     await fs.writeFile(path.join(pqDir, 'context', 'PERSONAS.md'), personas)
+
+    // Write CLAUDE.md so Claude CLI picks up context immediately
+    await syncContextToCLAUDEMD(projectDir, pqDir)
 
     emit('complete', { message: 'Context generation complete!' })
     res.json({ success: true, files: ['PRD.md', 'ARCHITECTURE.md', 'TECH_STACK.md', 'PERSONAS.md'] })
@@ -251,6 +262,9 @@ Be thorough and specific. Infer as much as possible from the actual code. Do not
       await fs.writeFile(path.join(pqDir, 'context', 'PERSONAS.md'), personas)
     }
 
+    // Write CLAUDE.md so every Claude CLI invocation picks up this context
+    await syncContextToCLAUDEMD(projectDir, pqDir)
+
     emit('complete', { message: 'Context generation complete! project-q knows your codebase.' })
     res.json({ success: true, files: ['PRD.md', 'ARCHITECTURE.md', 'TECH_STACK.md', 'PERSONAS.md'] })
   } catch (err) {
@@ -337,9 +351,9 @@ async function deepScanProject(projectDir) {
     gitLog: null
   }
 
-  const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '__pycache__', '.cache', 'vendor', '.project-q'])
-  const SOURCE_EXTS = new Set(['.js', '.jsx', '.ts', '.tsx', '.py', '.go', '.rs', '.rb', '.java', '.cs', '.cpp', '.c', '.vue', '.svelte', '.swift', '.kt'])
-  const CONFIG_NAMES = new Set(['vite.config.js', 'vite.config.ts', 'webpack.config.js', 'tsconfig.json', 'tailwind.config.js', 'next.config.js', 'docker-compose.yml', 'Dockerfile', '.eslintrc.json', 'jest.config.js', 'pytest.ini', 'Makefile'])
+  const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.cache', 'vendor', '.project-q'])
+  const SOURCE_EXTS = new Set(['.js', '.jsx', '.ts', '.tsx', '.go', '.rs', '.rb', '.java', '.cs', '.cpp', '.c', '.vue', '.svelte', '.swift', '.kt'])
+  const CONFIG_NAMES = new Set(['vite.config.js', 'vite.config.ts', 'webpack.config.js', 'tsconfig.json', 'tailwind.config.js', 'next.config.js', '.eslintrc.json', 'jest.config.js', 'Makefile'])
   const DOC_EXTS = new Set(['.md', '.txt', '.rst'])
 
   // Build directory tree string (2 levels deep)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { CheckCircle, AlertCircle, RefreshCw, Terminal, Zap, Key, ExternalLink } from 'lucide-react'
+import { CheckCircle, AlertCircle, RefreshCw, Terminal, Zap, Key, ExternalLink, FolderOpen, AlertTriangle } from 'lucide-react'
 import { useStore } from '../store'
 import { useProject } from '../hooks/useProject'
 
@@ -82,6 +82,36 @@ export default function SettingsPage() {
       <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '24px' }}>
         project-q auto-detects AI tools installed on your system — no API keys needed.
       </p>
+
+      {/* Target project */}
+      <div className="card" style={{ marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+          <FolderOpen size={15} color="var(--accent-hover)" />
+          <span style={{ fontWeight: 600, fontSize: '13px' }}>Target Project</span>
+        </div>
+        {config?.projectDir ? (
+          <div>
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: '12px',
+              background: 'var(--bg-base)', padding: '8px 10px',
+              borderRadius: 'var(--radius)', color: 'var(--text-primary)',
+              border: '1px solid var(--border)', wordBreak: 'break-all'
+            }}>
+              {config.projectDir}
+            </div>
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px', marginBottom: 0 }}>
+              All workflows and agents read and write files in this directory. Change by restarting project-q with a different <code style={{ fontFamily: 'var(--font-mono)' }}>PROJECT_DIR</code> environment variable.
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+            <AlertTriangle size={14} color="var(--orange)" style={{ flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: '12px', color: 'var(--orange)', margin: 0 }}>
+              <strong>PROJECT_DIR not set.</strong> project-q is targeting its own directory. Start the server with <code style={{ fontFamily: 'var(--font-mono)' }}>PROJECT_DIR=/path/to/your/project node server</code> to target your codebase.
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Auto-detection panel */}
       <div className="card" style={{ marginBottom: '16px' }}>
@@ -367,7 +397,7 @@ function InstallHint({ providerId }) {
   const hints = {
     'ollama':     { label: 'Install Ollama', url: 'https://ollama.ai', cmd: 'brew install ollama' },
     'gemini-cli': { label: 'Install Gemini CLI', url: 'https://github.com/google-gemini/gemini-cli', cmd: 'npm i -g @google/gemini-cli' },
-    'openai-cli': { label: 'Install OpenAI CLI', url: 'https://github.com/openai/openai-python', cmd: 'pip install openai' },
+    'openai-cli': { label: 'Install OpenAI CLI', url: 'https://github.com/openai/openai-node', cmd: 'npm install openai' },
   }
   const hint = hints[providerId]
   if (!hint) return null

@@ -78,10 +78,11 @@ class AIService {
       model    = model || best.model
     }
 
-    this.provider = provider
-    this.model    = model
-    this.apiKey   = config.apiKey
-    this.baseUrl  = config.baseUrl
+    this.provider    = provider
+    this.model       = model
+    this.apiKey      = config.apiKey
+    this.baseUrl     = config.baseUrl
+    this.projectDir  = config.projectDir || null
   }
 
   _getProvider() {
@@ -112,11 +113,30 @@ class AIService {
     return result
   }
 
+  /**
+   * Agentic stream — runs Claude CLI with full tool access in the project dir.
+   * Claude reads and writes files directly; tool invocations are streamed as notices.
+   * Only claude-cli supports this. Other providers fall back to chatStream.
+   */
+  async agenticStream(taskPrompt, onChunk, options = {}) {
+    const p = this._getProvider()
+    const opts = this._opts(options)
+
+    if (p.agenticStream) {
+      return p.agenticStream(taskPrompt, opts, onChunk)
+    }
+
+    // Fallback for non-CLI providers: treat as single completion (no tool use)
+    console.warn('[ai] agenticStream not supported by provider — falling back to chatStream')
+    return this.chatStream('', [{ role: 'user', content: taskPrompt }], onChunk, options)
+  }
+
   _opts(extra = {}) {
     return {
-      model:   this.model,
-      apiKey:  this.apiKey,
-      baseUrl: this.baseUrl,
+      model:      this.model,
+      apiKey:     this.apiKey,
+      baseUrl:    this.baseUrl,
+      projectDir: this.projectDir,
       ...extra,
     }
   }

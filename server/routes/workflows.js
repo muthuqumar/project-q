@@ -5,6 +5,7 @@ const path = require('path')
 const { v4: uuidv4 } = require('uuid')
 const WorkflowEngine = require('../services/workflows/engine')
 const builtinWorkflows = require('../services/workflows/registry')
+const executionRegistry = require('../services/workflows/execution-registry')
 
 // GET /api/workflows — list all workflows (built-in + custom)
 router.get('/', async (req, res) => {
@@ -163,10 +164,14 @@ router.post('/:id/run', async (req, res) => {
 })
 
 // POST /api/workflows/:id/step — run a single workflow step (chat-based)
+// If `streamId` is provided in body, chunk tokens are emitted via socket as
+// `step:chunk:<streamId>` events so the client can display them in real-time.
 router.post('/:id/step', async (req, res) => {
   const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
+  const io = req.app.get('io')
   const { id } = req.params
-  const { step, message, history, aiConfig } = req.body
+  const { step, message, history, aiConfig, streamId } = req.body
 
   try {
     const configPath = path.join(pqDir, 'config.json')
@@ -174,11 +179,43 @@ router.post('/:id/step', async (req, res) => {
     const aiConf = aiConfig || config.ai || { provider: 'claude', model: 'claude-opus-4-6' }
     const context = await loadProjectContext(pqDir)
 
-    const engine = new WorkflowEngine({ pqDir, aiConfig: aiConf, context })
-    const result = await engine.runStep(id, step, message, history)
+    console.log(`[step] ${id}/${step} — provider: ${aiConf.provider || 'auto'}, model: ${aiConf.model || 'default'}`)
+
+    const engine = new WorkflowEngine({ pqDir, projectDir, aiConfig: aiConf, context })
+
+    // If a streamId was provided, emit chunks to the client in real-time
+    const onChunk = streamId
+      ? (chunk) => io.emit(`step:chunk:${streamId}`, { chunk })
+      : null
+
+    const result = await engine.runStep(id, step, message, history, onChunk)
+
+    // Signal end-of-stream with full metadata so client can process signals
+    if (streamId) {
+      io.emit(`step:done:${streamId}`, result)
+    }
+
+    console.log(`[step] ${id}/${step} — done (${result.reply?.length ?? 0} chars)`)
     res.json(result)
   } catch (err) {
+    console.error(`[step] ${id}/${step} ERROR:`, err.message)
+    if (streamId) {
+      io.emit(`step:error:${streamId}`, { error: err.message })
+    }
     res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/workflows/executions/:executionId/stop — cancel a running execution
+router.post('/executions/:executionId/stop', (req, res) => {
+  const io = req.app.get('io')
+  const { executionId } = req.params
+  const stopped = executionRegistry.stop(executionId)
+  if (stopped) {
+    io.emit(`execution:${executionId}:stopped`, { executionId })
+    res.json({ success: true, message: 'Stop signal sent' })
+  } else {
+    res.status(404).json({ error: 'Execution not found or already complete' })
   }
 })
 

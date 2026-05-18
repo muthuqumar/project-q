@@ -23,7 +23,7 @@ echo ""
 chmod +x "$BIN"
 echo -e "  ${GREEN}✓${NC} bin/pq.js is executable"
 
-# 2. Install dependencies if needed
+# 2. Install server dependencies if needed
 if [ ! -d "$PQ_DIR/server/node_modules" ]; then
   echo -e "  ${CYAN}▶${NC} Installing server dependencies..."
   cd "$PQ_DIR/server" && npm install --silent
@@ -33,7 +33,20 @@ else
   echo -e "  ${GREEN}✓${NC} Server dependencies already installed"
 fi
 
-# 3. Try symlinking to /usr/local/bin (works without sudo on most Macs)
+# 3. Install client dependencies and build the frontend
+if [ ! -d "$PQ_DIR/client/node_modules" ]; then
+  echo -e "  ${CYAN}▶${NC} Installing client dependencies..."
+  cd "$PQ_DIR/client" && npm install --silent
+  cd "$PQ_DIR"
+  echo -e "  ${GREEN}✓${NC} Client dependencies installed"
+fi
+
+echo -e "  ${CYAN}▶${NC} Building frontend..."
+cd "$PQ_DIR/client" && npx vite build 2>&1 | grep -E '✓|✗|error|Error' || true
+cd "$PQ_DIR"
+echo -e "  ${GREEN}✓${NC} Frontend built"
+
+# 4. Try symlinking to /usr/local/bin (works without sudo on most Macs)
 SYMLINK="/usr/local/bin/pq"
 
 if [ -w "/usr/local/bin" ]; then
@@ -45,7 +58,7 @@ if [ -w "/usr/local/bin" ]; then
   exit 0
 fi
 
-# 4. Try with sudo
+# 5. Try with sudo
 echo -e "  ${YELLOW}⚠${NC}  /usr/local/bin is not writable — trying with sudo..."
 if sudo ln -sf "$BIN" "$SYMLINK" 2>/dev/null; then
   echo -e "  ${GREEN}✓${NC} Symlinked with sudo: pq → $BIN"
@@ -55,7 +68,7 @@ if sudo ln -sf "$BIN" "$SYMLINK" 2>/dev/null; then
   exit 0
 fi
 
-# 5. Fall back: add alias to shell config
+# 6. Fall back: add alias to shell config
 echo -e "  ${YELLOW}⚠${NC}  Could not write to /usr/local/bin. Adding shell alias instead..."
 echo ""
 

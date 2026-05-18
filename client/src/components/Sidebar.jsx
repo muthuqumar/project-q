@@ -2,7 +2,7 @@ import React from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Kanban, Zap, FileText, Settings,
-  ChevronLeft, ChevronRight, GitBranch, GitMerge, Layers, Bug, Plus, Code2, Cpu
+  ChevronLeft, ChevronRight, GitBranch, GitMerge, Layers, Bug, Plus, Code2, Cpu, Bot
 } from 'lucide-react'
 import { useStore } from '../store'
 
@@ -13,15 +13,16 @@ function WfIcon({ name, size = 14 }) {
 }
 
 const NAV_ITEMS = [
-  { path: '/',          icon: LayoutDashboard, label: 'Dashboard',  exact: true },
-  { path: '/kanban',    icon: Kanban,          label: 'Kanban',     badge: 'tasks' },
-  { path: '/workflows', icon: Zap,             label: 'Workflows' },
-  { path: '/context',   icon: FileText,        label: 'Context' },
-  { path: '/settings',  icon: Settings,        label: 'Settings' },
+  { path: '/',              icon: LayoutDashboard, label: 'Dashboard',    exact: true },
+  { path: '/kanban',        icon: Kanban,          label: 'Kanban',       badge: 'tasks' },
+  { path: '/workflows',     icon: Zap,             label: 'Workflows' },
+  { path: '/orchestrator',  icon: Bot,             label: 'Orchestrator', badge: 'missions' },
+  { path: '/context',       icon: FileText,        label: 'Context' },
+  { path: '/settings',      icon: Settings,        label: 'Settings' },
 ]
 
 export default function Sidebar() {
-  const { sidebarOpen, setSidebarOpen, tasks, workflows, config } = useStore()
+  const { sidebarOpen, setSidebarOpen, tasks, workflows, config, activeMissionCount } = useStore()
   const navigate = useNavigate()
 
   const activeTasks = tasks.filter(t => t.column === 'in_progress').length
@@ -149,6 +150,11 @@ export default function Sidebar() {
             )}
             {badge === 'tasks' && activeTasks === 0 && todoTasks > 0 && (
               <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{todoTasks}</span>
+            )}
+            {badge === 'missions' && activeMissionCount > 0 && (
+              <span className="badge badge-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
+                {activeMissionCount}
+              </span>
             )}
           </NavLink>
         ))}

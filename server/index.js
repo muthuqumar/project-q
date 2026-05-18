@@ -14,6 +14,13 @@ const io = new Server(server, {
 
 // ── Config ─────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3141
+
+if (!process.env.PROJECT_DIR) {
+  console.warn('\n  ⚠  WARNING: PROJECT_DIR env var is not set.')
+  console.warn('     Defaulting to current working directory: ' + process.cwd())
+  console.warn('     Set PROJECT_DIR=/path/to/your/project to target a different codebase.\n')
+}
+
 const PROJECT_DIR = process.env.PROJECT_DIR || process.cwd()
 const PQ_DIR = path.join(PROJECT_DIR, '.project-q')
 
@@ -22,8 +29,19 @@ app.set('io', io)
 app.set('pqDir', PQ_DIR)
 app.set('projectDir', PROJECT_DIR)
 
+// Load saved AI config for orchestrator
+;(async () => {
+  try {
+    const configPath = require('path').join(PQ_DIR, 'config.json')
+    if (fs.existsSync(configPath)) {
+      const cfg = await fs.readJson(configPath)
+      if (cfg.ai) app.set('aiConfig', cfg.ai)
+    }
+  } catch {}
+})()
+
 // Ensure .project-q structure
-;['context', 'tasks', 'workflows'].forEach(d =>
+;['context', 'tasks', 'workflows', 'missions', 'backups'].forEach(d =>
   fs.ensureDirSync(path.join(PQ_DIR, d))
 )
 
@@ -39,6 +57,8 @@ app.use('/api/tasks',     require('./routes/tasks'))
 app.use('/api/workflows', require('./routes/workflows'))
 app.use('/api/ai',        require('./routes/ai'))
 app.use('/api/files',     require('./routes/files'))
+const { router: agentsRouter, autoPickupTasks } = require('./routes/agents')
+app.use('/api/agents',    agentsRouter)
 
 // SPA fallback
 app.get('*', (req, res) => {
@@ -75,6 +95,14 @@ server.listen(PORT, () => {
   console.log(`  ║   http://localhost:${PORT}              ║`)
   console.log(`  ║   project: ${PROJECT_DIR.slice(-30).padEnd(30)} ║`)
   console.log(`  ╚═══════════════════════════════════════╝\n`)
+
+  // Auto-pickup: check for unassigned todo tasks every 30s
+  const runPickup = () => {
+    const aiConfig = app.get('aiConfig')
+    autoPickupTasks(PQ_DIR, PROJECT_DIR, io, aiConfig).catch(() => {})
+  }
+  setTimeout(runPickup, 5000)           // initial scan after 5s
+  setInterval(runPickup, 30 * 1000)     // then every 30s
 })
 
 module.exports = { app, io }

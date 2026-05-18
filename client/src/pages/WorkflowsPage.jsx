@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Zap, Plus, Users, GitBranch, Layers, GitMerge, Bug, ChevronRight, Code2 } from 'lucide-react'
+import { Zap, Plus, Users, GitBranch, Layers, GitMerge, Bug, ChevronRight, Code2, FolderOpen, AlertTriangle } from 'lucide-react'
 import { useStore } from '../store'
 
 // Map lucide icon names (from registry) to components
@@ -15,7 +15,7 @@ import CustomWorkflowBuilder from '../components/Workflow/CustomWorkflowBuilder'
 import CustomWorkflowRunner from '../components/Workflow/CustomWorkflowRunner'
 
 // Workflows that use the DevNow (quick) runner
-const DEV_NOW_WORKFLOWS = new Set(['dev-now', 'bug-fix'])
+const DEV_NOW_WORKFLOWS = new Set(['dev-now'])
 
 // Badge config by workflow id
 const BADGE_CONFIG = {
@@ -28,8 +28,9 @@ const BADGE_CONFIG = {
 
 export default function WorkflowsPage() {
   const { id } = useParams()
-  const { workflows } = useStore()
+  const { workflows, config } = useStore()
   const navigate = useNavigate()
+  const targetDir = config?.projectDir || null
 
   // Route to specific workflow runners
   if (id) {
@@ -37,7 +38,7 @@ export default function WorkflowsPage() {
     if (id === 'new') return <CustomWorkflowBuilder onSave={() => navigate('/workflows')} />
 
     // Check if it's a known built-in multi-step workflow
-    const builtinIds = ['feature-dev', 'greenfield', 'brownfield-feature']
+    const builtinIds = ['feature-dev', 'greenfield', 'brownfield-feature', 'bug-fix']
     if (builtinIds.includes(id)) return <MultiStepWorkflow workflowId={id} />
 
     // Custom workflow
@@ -58,6 +59,27 @@ export default function WorkflowsPage() {
         <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
           BMAD-powered AI development pipelines. Each workflow activates the right specialist agents at every phase.
         </p>
+      </div>
+
+      {/* Target project indicator */}
+      <div style={{
+        background: targetDir ? 'var(--bg-elevated)' : 'rgba(255,160,0,0.08)',
+        border: `1px solid ${targetDir ? 'var(--border)' : 'rgba(255,160,0,0.35)'}`,
+        borderRadius: 'var(--radius-lg)', padding: '10px 14px',
+        display: 'flex', alignItems: 'center', gap: '10px',
+        marginBottom: '16px', fontSize: '12px'
+      }}>
+        {targetDir
+          ? <FolderOpen size={14} color="var(--accent-hover)" style={{ flexShrink: 0 }} />
+          : <AlertTriangle size={14} color="var(--orange)" style={{ flexShrink: 0 }} />
+        }
+        <div>
+          <span style={{ color: 'var(--text-muted)' }}>Target project: </span>
+          {targetDir
+            ? <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', fontWeight: 500 }}>{targetDir}</span>
+            : <span style={{ color: 'var(--orange)' }}>PROJECT_DIR not set — workflows will target project-q's own directory. Set <code style={{ fontFamily: 'var(--font-mono)' }}>PROJECT_DIR</code> env var and restart.</span>
+          }
+        </div>
       </div>
 
       {/* BMAD team callout */}

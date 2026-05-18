@@ -16,6 +16,9 @@ export function useProject() {
 
       if (initData.initialized) {
         setConfig(initData.config)
+      } else if (initData.projectDir) {
+        // Not yet initialized but server knows the target dir — surface it in config
+        setConfig({ projectDir: initData.projectDir })
       }
 
       // Load context files
@@ -96,22 +99,26 @@ export function useProject() {
     return res.json()
   }
 
-  async function runWorkflowStep(workflowId, step, message, history) {
+  async function runWorkflowStep(workflowId, step, message, history, streamId) {
     const res = await fetch(`${API}/workflows/${workflowId}/step`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ step, message, history })
+      body: JSON.stringify({ step, message, history, streamId })
     })
-    return res.json()
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `Server error ${res.status}`)
+    return data
   }
 
   async function runWorkflow(workflowId, input) {
     const res = await fetch(`${API}/workflows/${workflowId}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input)
+      body: JSON.stringify({ input })
     })
-    return res.json()
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `Server error ${res.status}`)
+    return data
   }
 
   async function createBulkTasks(tasks) {
@@ -125,6 +132,10 @@ export function useProject() {
 
   async function deleteWorkflowTasks(workflowId) {
     await fetch(`${API}/tasks/workflow/${workflowId}`, { method: 'DELETE' })
+  }
+
+  async function stopExecution(executionId) {
+    await fetch(`${API}/workflows/executions/${executionId}/stop`, { method: 'POST' })
   }
 
   async function createCustomWorkflow(workflow) {
@@ -162,6 +173,23 @@ export function useProject() {
     return res.json()
   }
 
+  async function scanAndGenerateContext(aiConfig) {
+    const res = await fetch(`${API}/init/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiConfig })
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `Scan failed (${res.status})`)
+    // Reload context into store after generation
+    try {
+      const ctxRes = await fetch(`${API}/context`)
+      const ctxData = await ctxRes.json()
+      setContext(ctxData.context || {})
+    } catch {}
+    return data
+  }
+
   async function testAI(provider, model, apiKey) {
     const res = await fetch(`${API}/ai/test`, {
       method: 'POST',
@@ -186,12 +214,14 @@ export function useProject() {
     createTask,
     runWorkflowStep,
     runWorkflow,
+    stopExecution,
     createBulkTasks,
     deleteWorkflowTasks,
     createCustomWorkflow,
     updateContextFile,
     interviewStep,
     generateContext,
+    scanAndGenerateContext,
     testAI
   }
 }
