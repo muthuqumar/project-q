@@ -388,6 +388,44 @@ router.post('/missions/:id/answer', async (req, res) => {
   }
 })
 
+// POST /api/agents/missions/:id/retry — retry a failed mission
+router.post('/missions/:id/retry', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
+  const io = req.app.get('io')
+  const aiConfig = req.app.get('aiConfig')
+  try {
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    if (mission.status !== 'failed') return res.status(400).json({ error: 'Only failed missions can be retried' })
+
+    const planningFailed = !mission.steps || mission.steps.length === 0 ||
+      mission.steps.every(s => s.status === 'pending')
+
+    if (planningFailed) {
+      // Planning never completed — re-run planning from scratch
+      const task = { title: mission.taskTitle, description: mission.taskDescription, priority: mission.taskPriority }
+      await updateMission(pqDir, mission.id, { status: 'planning', plan: null, steps: [] })
+      await appendLog(pqDir, mission.id, { agent: 'Orchestrator', message: 'Retrying planning...', type: 'info' })
+      emit(io, 'updated', { id: mission.id, status: 'planning' })
+      setImmediate(() => runPlanning(pqDir, projectDir, io, mission.id, task, aiConfig))
+    } else {
+      // Execution failed — reset failed steps to pending and re-execute
+      const resetSteps = mission.steps.map(s =>
+        s.status === 'failed' ? { ...s, status: 'pending', result: null, fileChanges: [] } : s
+      )
+      await updateMission(pqDir, mission.id, { status: 'awaiting_approval', steps: resetSteps, completedAt: null })
+      await appendLog(pqDir, mission.id, { agent: 'Orchestrator', message: 'Retrying from failed steps — awaiting approval', type: 'info' })
+      emit(io, 'updated', { id: mission.id, status: 'awaiting_approval', steps: resetSteps })
+    }
+
+    const updated = await getMission(pqDir, mission.id)
+    res.json({ mission: updated })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // DELETE /api/agents/missions/:id — cancel
 router.delete('/missions/:id', async (req, res) => {
   const pqDir = req.app.get('pqDir')

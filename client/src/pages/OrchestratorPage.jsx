@@ -242,6 +242,7 @@ function MissionDetail({ mission, onRefresh, onUpdate }) {
   const [approvalMode, setApprovalMode] = useState('all')
   const [selectedSteps, setSelectedSteps] = useState([])
   const [approving, setApproving] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const [answers, setAnswers] = useState({})
   const [submitting, setSubmitting] = useState({})
   const logEndRef = useRef(null)
@@ -270,6 +271,13 @@ function MissionDetail({ mission, onRefresh, onUpdate }) {
   async function handleCancel() {
     await fetch(`/api/agents/missions/${mission.id}`, { method: 'DELETE' })
     await onRefresh()
+  }
+
+  async function handleRetry() {
+    setRetrying(true)
+    await fetch(`/api/agents/missions/${mission.id}/retry`, { method: 'POST' })
+    await onRefresh()
+    setRetrying(false)
   }
 
   async function handleAnswer(questionId) {
@@ -309,11 +317,19 @@ function MissionDetail({ mission, onRefresh, onUpdate }) {
             )}
           </div>
         </div>
-        {!['complete', 'cancelled', 'failed'].includes(mission.status) && (
-          <button className="btn btn-ghost btn-sm" onClick={handleCancel}>
-            <X size={13} /> Cancel
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {mission.status === 'failed' && (
+            <button className="btn btn-primary btn-sm" onClick={handleRetry} disabled={retrying}>
+              {retrying ? <Loader size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+              {retrying ? 'Retrying…' : 'Retry'}
+            </button>
+          )}
+          {!['complete', 'cancelled', 'failed'].includes(mission.status) && (
+            <button className="btn btn-ghost btn-sm" onClick={handleCancel}>
+              <X size={13} /> Cancel
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Mission summary */}

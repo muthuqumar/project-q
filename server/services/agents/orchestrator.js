@@ -115,9 +115,28 @@ CRITICAL RULES:
 // ── Parse + validate the orchestrator's plan ─────────────────────────────────
 
 function parsePlan(raw) {
-  // Strip markdown code blocks if present
-  const clean = raw.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim()
-  const plan = JSON.parse(clean)
+  // Strip markdown code fences
+  let clean = raw.replace(/```(?:json)?\n?/g, '').replace(/\n?```/g, '').trim()
+
+  // The model sometimes prefixes with prose ("Now I have...", "Here's the plan:").
+  // Extract the outermost JSON object regardless of what surrounds it.
+  const jsonStart = clean.indexOf('{')
+  const jsonEnd   = clean.lastIndexOf('}')
+  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
+    console.error('[orchestrator] parsePlan: no JSON object found in response')
+    console.error('[orchestrator] raw response preview:', raw.slice(0, 400))
+    throw new Error('Orchestrator response contained no JSON object')
+  }
+  clean = clean.slice(jsonStart, jsonEnd + 1)
+
+  let plan
+  try {
+    plan = JSON.parse(clean)
+  } catch (e) {
+    console.error('[orchestrator] parsePlan: JSON.parse failed:', e.message)
+    console.error('[orchestrator] extracted JSON preview:', clean.slice(0, 400))
+    throw new Error(`Plan JSON invalid: ${e.message}`)
+  }
 
   // Validate required fields
   if (!plan.steps || !Array.isArray(plan.steps)) throw new Error('Plan missing steps array')
