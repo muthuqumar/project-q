@@ -1,23 +1,21 @@
 # project-q
 
-AI-powered development workflow agent — inspired by BMAD Method.
+AI-powered development workflow agent with a structured MI6 agent pipeline.
 
-**project-q** embeds inside any development project and gives you a local web UI with AI-driven workflows, a drag-drop Kanban board, and an intelligent agent team that understands your codebase.
+**project-q** embeds inside any development project and gives you a local web UI where you describe a task in plain English. An orchestrated team of specialist AI agents — each with a defined role, deliverable, and model tier — plan, design, implement, and test the work in sequence.
 
 ---
 
-## Features
+## How it works
 
-- **dev-now** — Quick implementation workflow: describe what you want, AI estimates scope, asks targeted questions, implements
-- **feature-dev** — Full feature workflow: requirements gathering, tech spec generation, Kanban task creation, sequential/parallel execution with approval gates
-- **greenfield** — End-to-end new project workflow: discovery through sprint planning
-- **brownfield-feature** — Integration-aware feature development for existing codebases
-- **bug-fix** — Investigation-first bug resolution with structured root cause analysis
-- **Custom workflows** — Build multi-step AI workflows with a visual editor
-- **Kanban board** — Drag-drop board with columns: Backlog, Todo, In Progress, Review, Done
-- **Multi-AI support** — Claude, OpenAI/Codex, Gemini, Ollama, and local CLI providers
-- **Auto-generated context** — Scans your codebase and generates PRD, Architecture, Tech Stack, and Agent Persona docs automatically
-- **Real-time updates** — WebSocket keeps the Kanban board live as AI executes tasks
+Every mission flows through a four-agent pipeline:
+
+```
+Mallory → Quartermaster → James Bond → Moneypenny
+(scope)    (design)        (implement)   (QA + tests)
+```
+
+Each agent reads the previous agent's deliverable before starting, ensuring every stage builds on verified context rather than assumptions. For small, self-contained tasks, **Felix** handles the work directly without a design phase.
 
 ---
 
@@ -41,9 +39,11 @@ pq start
 
 project-q opens at `http://localhost:3141`, scans your codebase, and generates context files automatically.
 
-### 3. Optional: set an API key
+> **Note:** Do not run `pq start` from inside the project-q directory itself — it will exit with an error. Always run from your target project.
 
-For API-based providers (Anthropic, OpenAI, Gemini), create a `.env` in the project-q directory:
+### 3. Set an API key (for API providers)
+
+Create a `.env` in the project-q directory:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
@@ -51,66 +51,71 @@ OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 ```
 
-CLI providers (Claude Code, Ollama, Codex CLI) work without an API key.
+CLI providers (Claude Code, Ollama, Gemini CLI) work without an API key.
 
 ---
 
-## Workflows
+## The Agent Team
 
-### dev-now
+| Agent | Codename | Role | Deliverable |
+|-------|----------|------|-------------|
+| Mallory | Scoping | Reads the codebase, maps what exists, defines exact scope | `scope.md` |
+| Quartermaster | Architect | Designs the solution — files to change, API contracts, data models | `design.md` |
+| James Bond | Developer | Implements exactly what Quartermaster designed, runs verification | `implementation-summary.md` |
+| Moneypenny | QA | Writes tests against Q's design and J's implementation | `test-plan.md` |
+| Felix | Fast | Lightweight single-file tasks, no design phase needed | — |
 
-Best for: quick fixes, small features, refactors.
+### Deliverable chain
 
-1. Describe what you want to build
-2. AI analyses scope and estimates complexity
-3. AI asks up to 3 clarifying questions
-4. Click **Implement** — changes applied via your configured AI CLI
+Each agent's output is automatically passed to the next:
 
-### feature-dev
+- **Quartermaster** receives Mallory's `scope.md`
+- **James Bond** receives Quartermaster's `design.md`
+- **Moneypenny** receives both `design.md` and `implementation-summary.md`
 
-Best for: new features, complex changes, multi-file work.
+Deliverables are stored in `.project-q/missions/<id>/` and are viewable inline in the UI.
 
-1. Describe the feature (high level is fine)
-2. AI asks detailed questions until requirements are fully clear
-3. AI generates a **Tech Spec** document
-4. AI generates a **task plan** with execution order (sequential/parallel)
-5. Review and **approve** the task plan
-6. Tasks appear in the **Kanban board**
-7. Click **Execute** — AI runs tasks in planned order
+### Post-implementation verification
 
-### greenfield
-
-Full new-project workflow spanning discovery, PRD creation, architecture design, story breakdown, and sprint planning. Activates the full MI6 agent team.
-
-### brownfield-feature
-
-Adds a feature to an existing codebase. Includes a codebase audit phase before spec writing to ensure safe integration.
-
-### bug-fix
-
-Tanner investigates the bug first, produces a root cause analysis, then James Bond implements the fix.
-
-### Custom workflows
-
-1. Go to **Workflows → New workflow**
-2. Name it, add steps (conversation, analysis, generation, execution, approval)
-3. Use `{{input}}` in prompts to reference the user's initial request
-4. Save and run from the sidebar
+After James Bond completes each step, project-q automatically runs any available scripts from the module's `package.json` in order: `lint` → `typecheck` / `type-check` / `tsc` → `test`. Results appear as coloured pills (✓ / ✗) in the step card.
 
 ---
 
-## Agent Team (MI6)
+## Mission lifecycle
 
-Each workflow phase activates the appropriate specialist:
+```
+planning → awaiting_info → planning (re-plan) → awaiting_approval → executing → complete
+```
 
-| Codename | Role | Responsibilities |
-|----------|------|-----------------|
-| Moneypenny | Business Analyst | Discovery, requirements, edge cases |
-| Mallory | Product Manager | PRD, user stories, acceptance criteria |
-| Quartermaster | Software Architect | System design, ADRs, API design |
-| James Bond | Senior Developer | Implementation, code review, refactoring |
-| Tanner | QA Engineer | Test planning, bug investigation, validation |
-| Felix | Scrum Master | Task breakdown, sprint planning, parallel execution |
+- **planning** — Orchestrator analyses the task and codebase, produces a plan
+- **awaiting_info** — Orchestrator has questions; you answer them before work begins
+- **awaiting_approval** — Plan is ready; review and approve the steps (or edit them)
+- **executing** — Agents run in sequence; you can pause, skip steps, or require step-by-step approval
+- **complete / failed** — Mission done or errored (failed missions with answered questions recover to `awaiting_info` so you can retry)
+
+---
+
+## AI Providers & Model Tiers
+
+project-q assigns models by agent role, not a single global model:
+
+| Role | Tier | Default (Anthropic) |
+|------|------|---------------------|
+| Orchestrator, Planner, Architect | Opus | `claude-opus-4-6` |
+| Implementer, QA, Reviewer | Sonnet | `claude-sonnet-4-6` |
+| Fast | Haiku | `claude-haiku-4-5` |
+
+Supported providers:
+
+| Provider | Auth |
+|----------|------|
+| Anthropic API | `ANTHROPIC_API_KEY` |
+| Claude Code (CLI) | `claude /login` |
+| OpenAI | `OPENAI_API_KEY` |
+| Gemini API | `GEMINI_API_KEY` |
+| Ollama | Local — no key needed |
+
+Override per-role models in **Settings → AI Configuration**.
 
 ---
 
@@ -120,29 +125,20 @@ When project-q initialises in your project, it creates:
 
 ```
 .project-q/
-├── config.json         # AI provider, project settings
+├── config.json             # AI provider, project settings
 ├── context/
-│   ├── PRD.md          # Product Requirements Document
-│   ├── ARCHITECTURE.md # System architecture
-│   ├── TECH_STACK.md   # Technologies and conventions
-│   └── PERSONAS.md     # Agent personas, project-specific notes
-├── tasks/
-│   └── tasks.json      # Kanban tasks
-└── workflows/
-    └── *.json          # Custom workflow definitions
+│   ├── PRD.md              # Product Requirements Document
+│   ├── ARCHITECTURE.md     # System architecture
+│   ├── TECH_STACK.md       # Technologies and conventions
+│   └── PERSONAS.md         # Agent personas, project-specific notes
+└── missions/
+    └── <mission-id>/
+        ├── mission.json           # Mission state, plan, logs
+        ├── scope.md               # Mallory's deliverable
+        ├── design.md              # Quartermaster's deliverable
+        ├── implementation-summary.md  # James Bond's deliverable
+        └── test-plan.md           # Moneypenny's deliverable
 ```
-
----
-
-## AI Providers
-
-| Provider | Models | Auth |
-|----------|--------|------|
-| Claude Code (CLI) | claude-opus-4-6, sonnet-4-6, haiku-4-5 | `claude /login` |
-| Anthropic API | opus-4-6, sonnet-4-6, haiku-4-5 | `ANTHROPIC_API_KEY` |
-| OpenAI | gpt-4o, o1-preview | `OPENAI_API_KEY` |
-| Gemini | 1.5-pro, 2.0-flash | `GEMINI_API_KEY` |
-| Ollama | llama3, codellama, mistral, etc. | Local — no key needed |
 
 ---
 
@@ -150,29 +146,38 @@ When project-q initialises in your project, it creates:
 
 ```
 project-q/
-├── server/                    # Node.js + Express + Socket.io
-│   ├── index.js               # Server entry point (port 3141)
+├── server/                          # Node.js + Express + Socket.io
+│   ├── index.js                     # Entry point (port 3141)
 │   ├── routes/
-│   │   ├── init.js            # Codebase scan, context generation
-│   │   ├── tasks.js           # Kanban task CRUD + bulk ops
-│   │   ├── workflows.js       # Workflow management + execution
-│   │   ├── ai.js              # Provider config, detection, testing
-│   │   ├── context.js         # Context file management
-│   │   └── files.js           # Project file tree + read/write
+│   │   ├── agents.js                # Mission CRUD, planning, execution, answers, approvals
+│   │   ├── context.js               # Context file management
+│   │   ├── ai.js                    # Provider config + connection testing
+│   │   └── files.js                 # Project file tree + read/write
 │   └── services/
-│       ├── ai/                # Claude, OpenAI, Gemini, Ollama providers
-│       └── workflows/
-│           ├── engine.js      # Workflow execution engine (MI6 personas)
-│           └── registry.js    # Built-in workflow definitions
-└── client/                    # React + Vite
+│       ├── ai/
+│       │   ├── model-factory.js     # Vercel AI SDK provider + role-to-model mapping
+│       │   ├── claude-cli.js        # Claude CLI agentic streaming
+│       │   └── index.js             # Provider selection
+│       └── agents/
+│           ├── registry.js          # Agent definitions + system prompt personas
+│           ├── executor.js          # Step execution, deliverable injection, verification
+│           ├── orchestrator.js      # Mission planning, codebase context building
+│           ├── mission-store.js     # JSON-file mission persistence
+│           ├── agent-tools.js       # Tool definitions (read, write, glob, grep, run)
+│           └── context-guard.js     # Auto-generated context docs
+└── client/                          # React + Vite
     └── src/
+        ├── pages/
+        │   ├── MissionBoardPage.jsx # Main UI — mission list + slide-over detail panel
+        │   ├── SettingsPage.jsx     # AI config, context regeneration
+        │   └── ContextPage.jsx      # Context file viewer/editor
         ├── components/
-        │   ├── Kanban/        # Board, Column, TaskCard, TaskDetail
-        │   ├── Workflow/      # DevNow, MultiStepWorkflow, CustomWorkflow
-        │   └── Common/        # Terminal, ChatBubble, Notifications
-        ├── pages/             # Dashboard, Kanban, Workflows, Settings, Context
-        ├── hooks/             # useSocket, useProject
-        └── store/             # Zustand global state
+        │   ├── Layout.jsx
+        │   └── Sidebar.jsx
+        ├── hooks/
+        │   ├── useSocket.js         # Real-time mission + step events
+        │   └── useProject.js
+        └── store/                   # Zustand global state
 ```
 
 ---
@@ -199,16 +204,17 @@ npm start
 
 ### Add an AI provider
 
-1. Create `server/services/ai/yourprovider.js` — implement `complete()`, `chat()`, `chatStream()`
+1. Create `server/services/ai/yourprovider.js` — implement `agenticStream(prompt, onChunk, onTool, opts)`
 2. Register in `server/services/ai/index.js`
 3. Add to the provider list in `server/routes/ai.js`
+4. Add default role-to-model mappings in `server/services/ai/model-factory.js`
 
-### Add a built-in workflow
+### Add a new agent
 
-1. Add definition to `server/services/workflows/registry.js`
-2. Add execution handler to `server/services/workflows/engine.js`
-3. Create a React component in `client/src/components/Workflow/`
-4. Add the route in `client/src/pages/WorkflowsPage.jsx`
+1. Add the agent definition and persona to `server/services/agents/registry.js`
+2. Map the agent ID to a role in `AGENT_ROLES` in `executor.js`
+3. Add exploration checklist in `getExplorationInstructions()` in `executor.js`
+4. Optionally add a deliverable path entry in `getDeliverablePath()` and upstream injection in `buildAgenticPrompt()`
 
 ---
 
