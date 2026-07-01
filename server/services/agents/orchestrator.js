@@ -18,39 +18,102 @@ const path = require('path')
 async function buildContext(pqDir, projectDir) {
   const ctx = {}
 
-  // Load generated context files
+  // ── Generated context files (increased limit) ─────────────────────────────
   const contextDir = path.join(pqDir, 'context')
-  for (const name of ['PRD.md', 'ARCHITECTURE.md', 'TECH_STACK.md', 'PERSONAS.md']) {
+  for (const name of ['PRD.md', 'ARCHITECTURE.md', 'TECH_STACK.md']) {
     const p = path.join(contextDir, name)
     if (fs.existsSync(p)) {
-      ctx[name] = (await fs.readFile(p, 'utf8')).slice(0, 3000)
+      ctx[name] = (await fs.readFile(p, 'utf8')).slice(0, 6000)
     }
   }
 
-  // Shallow project structure
   try {
-    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.project-q'])
-    const entries = await fs.readdir(projectDir)
-    const top = entries.filter(e => !IGNORE.has(e) && !e.startsWith('.')).slice(0, 40)
-    ctx.projectStructure = top.join(', ')
+    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.project-q', 'vendor', '__pycache__', '.turbo', 'out'])
 
-    // package.json
+    // ── Multi-level directory tree ────────────────────────────────────────────
+    // Walk up to 3 levels deep for a real picture of the codebase structure
+    const buildTree = async (dir, depth, prefix = '') => {
+      if (depth === 0) return ''
+      let lines = ''
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true })
+        const filtered = entries
+          .filter(e => !IGNORE.has(e.name) && !e.name.startsWith('.'))
+          .slice(0, 40)
+        for (const entry of filtered) {
+          const isDir = entry.isDirectory()
+          lines += `${prefix}${isDir ? '📁' : '📄'} ${entry.name}\n`
+          if (isDir && depth > 1) {
+            lines += await buildTree(path.join(dir, entry.name), depth - 1, prefix + '  ')
+          }
+        }
+      } catch {}
+      return lines
+    }
+
+    ctx.projectStructure = await buildTree(projectDir, 3)
+
+    // ── package.json — scripts + deps ────────────────────────────────────────
     const pkgPath = path.join(projectDir, 'package.json')
     if (fs.existsSync(pkgPath)) {
       const pkg = await fs.readJson(pkgPath)
-      ctx.packageJson = JSON.stringify({ name: pkg.name, dependencies: pkg.dependencies, devDependencies: pkg.devDependencies }, null, 2).slice(0, 2000)
+      ctx.packageJson = JSON.stringify({
+        name: pkg.name,
+        scripts: pkg.scripts,
+        dependencies: pkg.dependencies,
+        devDependencies: pkg.devDependencies,
+      }, null, 2).slice(0, 3000)
     }
-  } catch {}
+
+    // ── Key config files ──────────────────────────────────────────────────────
+    const configCandidates = ['tsconfig.json', 'tsconfig.base.json', 'vite.config.ts', 'next.config.js', 'next.config.ts', 'webpack.config.js', '.eslintrc.js', '.eslintrc.json', 'jest.config.js', 'jest.config.ts']
+    const foundConfigs = []
+    for (const name of configCandidates) {
+      const p = path.join(projectDir, name)
+      if (fs.existsSync(p)) {
+        const content = (await fs.readFile(p, 'utf8')).slice(0, 1500)
+        foundConfigs.push(`### ${name}\n${content}`)
+      }
+    }
+    if (foundConfigs.length > 0) {
+      ctx.configFiles = foundConfigs.join('\n\n')
+    }
+
+    // ── Entry point file ──────────────────────────────────────────────────────
+    // Include the project's main entry to show real code style/patterns
+    const entryCandidates = [
+      'src/main.ts', 'src/main.tsx', 'src/index.ts', 'src/index.tsx',
+      'src/app.ts', 'src/app.tsx', 'src/App.tsx', 'src/App.ts',
+      'app/layout.tsx', 'app/page.tsx', 'pages/index.tsx', 'pages/_app.tsx',
+      'src/server.ts', 'server.ts', 'index.ts', 'index.js',
+    ]
+    for (const candidate of entryCandidates) {
+      const p = path.join(projectDir, candidate)
+      if (fs.existsSync(p)) {
+        const content = (await fs.readFile(p, 'utf8')).slice(0, 2000)
+        ctx.entryPoint = `### ${candidate}\n${content}`
+        break
+      }
+    }
+
+  } catch (err) {
+    console.error('[orchestrator] buildContext error:', err.message)
+  }
 
   return ctx
 }
 
 // ── Orchestrator planning prompt ──────────────────────────────────────────────
 
-function buildPlanningPrompt(task, context) {
+function buildPlanningPrompt(task, context, answeredQuestions = []) {
   const ctxStr = Object.entries(context)
     .map(([k, v]) => `### ${k}\n${v}`)
     .join('\n\n')
+
+  const answeredStr = answeredQuestions.length > 0
+    ? `\n\n## Clarifications already provided by the user\n\n` +
+      answeredQuestions.map(q => `**Q:** ${q.question}\n**A:** ${q.answer}`).join('\n\n')
+    : ''
 
   return `${getPersona('orchestrator')}
 
@@ -60,7 +123,7 @@ function buildPlanningPrompt(task, context) {
 
 **Title:** ${task.title}
 **Description:** ${task.description || '(no description provided)'}
-**Priority:** ${task.priority || 'medium'}
+**Priority:** ${task.priority || 'medium'}${answeredStr}
 
 ---
 
@@ -95,7 +158,8 @@ Analyse this task and produce a complete MissionPlan in the following JSON forma
       "confidence": "high|medium|low",
       "assumptions": ["any assumption being made that the user has not confirmed"],
       "dependsOn": ["step-id-if-any"],
-      "canParallel": false
+      "canParallel": false,
+      "expectedDeliverable": "design.md|implementation-summary.md|test-plan.md|null"
     }
   ],
   "executionOrder": "sequential|parallel|mixed",
@@ -171,17 +235,38 @@ function parsePlan(raw) {
 
 // ── Main plan function ────────────────────────────────────────────────────────
 
-async function planMission(task, pqDir, projectDir, aiConfig) {
+async function planMission(task, pqDir, projectDir, aiConfig, answeredQuestions = []) {
   const context = await buildContext(pqDir, projectDir)
-  const prompt = buildPlanningPrompt(task, context)
-  // Planning is analytical — context is injected inline, no cwd needed.
-  // projectDir: null prevents Claude CLI from scanning the project on every plan call.
-  const ai = new AIService({ ...(aiConfig || {}), projectDir: null })
+  const prompt = buildPlanningPrompt(task, context, answeredQuestions)
 
-  const raw = await ai.complete(prompt)
-  const plan = parsePlan(raw)
+  let raw
+  const { supportsVercelLoop, getModelForRole } = require('../ai/model-factory')
 
-  return plan
+  if (supportsVercelLoop(aiConfig?.provider)) {
+    try {
+      const { generateText } = require('ai')
+      const { model, modelName } = getModelForRole('orchestrator', aiConfig)
+      console.log(`[orchestrator] planning with ${modelName}`)
+      const result = await generateText({
+        model,
+        system: getPersona('orchestrator'),
+        prompt,
+        maxTokens: 8192,
+      })
+      raw = result.text
+    } catch (e) {
+      console.warn('[orchestrator] Vercel generateText failed, falling back:', e.message)
+      const ai = new AIService({ ...(aiConfig || {}), projectDir: null })
+      raw = await ai.complete(prompt)
+    }
+  } else {
+    // CLI provider — use opus for planning (best reasoning for architecture decisions)
+    console.log(`[orchestrator] planning with opus (cli)`)
+    const ai = new AIService({ ...(aiConfig || {}), projectDir: null, model: 'opus' })
+    raw = await ai.complete(prompt)
+  }
+
+  return parsePlan(raw)
 }
 
 module.exports = { planMission, buildContext }

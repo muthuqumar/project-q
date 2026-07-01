@@ -18,11 +18,12 @@
  */
 
 const { spawn } = require('child_process')
+const os = require('os')
 
 const BINARY      = 'claude'
 const DEFAULT_MODEL = 'sonnet'
-const CHAT_TIMEOUT_MS    = 8  * 60 * 1000   // 8 min — planning/conversational steps (complex tasks can be slow)
-const AGENTIC_TIMEOUT_MS = 10 * 60 * 1000   // 10 min — agentic implementation
+const CHAT_TIMEOUT_MS    = 10 * 60 * 1000   // 10 min — planning/conversational steps
+const AGENTIC_TIMEOUT_MS = 30 * 60 * 1000   // 30 min — agentic implementation (real coding work takes time)
 
 // ── Build message text from conversation history ──────────────────────────────
 
@@ -56,12 +57,17 @@ function spawnNonAgentic(systemPrompt, message, options = {}) {
   if (systemPrompt) args.push('--append-system-prompt', systemPrompt)
   args.push(message || '(no message)')
 
+  // When no projectDir is specified, run from a neutral temp directory so
+  // Claude CLI does NOT pick up any CLAUDE.md from the server's working
+  // directory tree (which could inject wrong project context).
+  const cwd = options.projectDir || os.tmpdir()
+
   const spawnOpts = {
     stdio: ['ignore', 'pipe', 'pipe'],
-    ...(options.projectDir ? { cwd: options.projectDir } : {}),
+    cwd,
   }
 
-  console.log(`[claude-cli:chat] ${args.slice(0, 4).join(' ')} ... cwd=${options.projectDir || '(server dir)'}`)
+  console.log(`[claude-cli:chat] ${args.slice(0, 4).join(' ')} ... cwd=${options.projectDir || '(tmp — no project context)'}`)
   return spawn(BINARY, args, spawnOpts)
 }
 
@@ -84,7 +90,7 @@ async function chat(systemPrompt, messages, options = {}) {
 
     const timer = setTimeout(() => {
       proc.kill()
-      reject(new Error('Claude CLI timed out (8 min). Is claude authenticated? Run: claude /login'))
+      reject(new Error('Claude CLI timed out (10 min). Is claude authenticated? Run: claude /login'))
     }, CHAT_TIMEOUT_MS)
 
     proc.on('close', code => {
@@ -133,6 +139,7 @@ async function agenticStream(taskPrompt, options = {}, onChunk) {
   const args = [
     '--print',
     '--output-format', 'stream-json',
+    '--verbose',
     '--model', model,
     '--no-session-persistence',
     '--dangerously-skip-permissions',

@@ -50,7 +50,13 @@ async function getMission(pqDir, id) {
   await ensureDir(pqDir)
   const p = missionPath(pqDir, id)
   if (!fs.existsSync(p)) return null
-  return fs.readJson(p)
+  try {
+    return await fs.readJson(p)
+  } catch (err) {
+    console.error(`[mission-store] Corrupt mission file ${id}: ${err.message} — removing`)
+    await fs.remove(p).catch(() => {})
+    return null
+  }
 }
 
 async function createMission(pqDir, { taskId, taskTitle, taskDescription, approvalMode = 'all' }) {

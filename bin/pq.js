@@ -65,9 +65,10 @@ switch (command) {
 
     // Don't start inside the project-q repo itself (unless explicitly passed)
     if (!args[1] && projectDir === ROOT) {
-      console.log(`${c.yellow}⚠  You're inside the project-q directory.${c.reset}`)
+      console.log(`${c.red}✗  You're inside the project-q directory — this would scan itself, not your project.${c.reset}`)
       console.log(`   Run ${c.cyan}pq start${c.reset} from your target project, or pass a path:`)
       console.log(`   ${c.cyan}pq start ~/code/my-app${c.reset}\n`)
+      process.exit(1)
     }
 
     if (!fs.existsSync(projectDir)) {

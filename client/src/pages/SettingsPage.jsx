@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { CheckCircle, AlertCircle, RefreshCw, Terminal, Zap, Key, ExternalLink, FolderOpen, AlertTriangle } from 'lucide-react'
+import { CheckCircle, AlertCircle, RefreshCw, Terminal, Zap, Key, ExternalLink, FolderOpen, AlertTriangle, FileText, RotateCcw } from 'lucide-react'
 import { useStore } from '../store'
 import { useProject } from '../hooks/useProject'
 
@@ -17,7 +17,43 @@ export default function SettingsPage() {
   const [showApiFallback, setShowApiFallback] = useState(false)
   const [apiKey, setApiKey]           = useState('')
 
-  useEffect(() => { scan() }, [])
+  // Context state
+  const [contextInfo, setContextInfo]         = useState(null)
+  const [contextLoading, setContextLoading]   = useState(false)
+  const [regenProgress, setRegenProgress]     = useState(null) // string or null
+
+  useEffect(() => { scan(); loadContextInfo() }, [])
+
+  async function loadContextInfo() {
+    try {
+      const res = await fetch('/api/agents/context')
+      if (res.ok) setContextInfo(await res.json())
+    } catch {}
+  }
+
+  async function handleRegenerateContext() {
+    setContextLoading(true)
+    setRegenProgress('Starting…')
+    try {
+      // Subscribe to socket progress events if socket is available
+      const res = await fetch('/api/agents/context/regenerate', { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        addNotification({ type: 'success', message: `Context regenerated: ${(data.files || []).join(', ')}` })
+        setRegenProgress(null)
+        await loadContextInfo()
+      } else {
+        const err = await res.json()
+        addNotification({ type: 'error', message: err.error || 'Regeneration failed' })
+        setRegenProgress(null)
+      }
+    } catch (err) {
+      addNotification({ type: 'error', message: err.message })
+      setRegenProgress(null)
+    } finally {
+      setContextLoading(false)
+    }
+  }
 
   async function scan() {
     setScanning(true)
@@ -110,6 +146,84 @@ export default function SettingsPage() {
               <strong>PROJECT_DIR not set.</strong> project-q is targeting its own directory. Start the server with <code style={{ fontFamily: 'var(--font-mono)' }}>PROJECT_DIR=/path/to/your/project node server</code> to target your codebase.
             </p>
           </div>
+        )}
+      </div>
+
+      {/* Project Context */}
+      <div className="card" style={{ marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <FileText size={15} color="var(--accent-hover)" />
+            <span style={{ fontWeight: 600, fontSize: '13px' }}>Project Context</span>
+          </div>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={handleRegenerateContext}
+            disabled={contextLoading}
+            title="Force-regenerate PRD.md, ARCHITECTURE.md, TECH_STACK.md"
+          >
+            <RotateCcw size={13} className={contextLoading ? 'animate-spin' : ''} />
+            {contextLoading ? 'Generating…' : 'Regenerate'}
+          </button>
+        </div>
+
+        {contextInfo?.stale && (
+          <div style={{
+            display: 'flex', alignItems: 'flex-start', gap: '8px',
+            padding: '8px 10px', borderRadius: 'var(--radius)', marginBottom: '10px',
+            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+          }}>
+            <AlertTriangle size={13} color="var(--yellow)" style={{ flexShrink: 0, marginTop: '2px' }} />
+            <div style={{ fontSize: '12px', color: 'var(--yellow)', lineHeight: 1.4 }}>
+              Context was generated for <strong>{contextInfo.meta?.projectName || contextInfo.meta?.projectDir?.split('/').pop()}</strong> but the current project is <strong>{contextInfo.projectDir?.split('/').pop()}</strong>. Click <em>Regenerate</em> to fix this — stale context causes the planner to reference wrong files.
+            </div>
+          </div>
+        )}
+
+        {regenProgress && (
+          <div style={{
+            fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
+            padding: '6px 8px', background: 'var(--bg-base)', borderRadius: 'var(--radius)',
+            marginBottom: '10px', border: '1px solid var(--border)'
+          }}>
+            {regenProgress}
+          </div>
+        )}
+
+        {contextInfo ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {(contextInfo.files || []).map(f => (
+              <div key={f.name} style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                fontSize: '12px', color: f.exists ? 'var(--text-secondary)' : 'var(--text-muted)'
+              }}>
+                {f.exists
+                  ? <CheckCircle size={12} color="var(--green)" />
+                  : <AlertCircle size={12} color="var(--text-muted)" style={{ opacity: 0.5 }} />
+                }
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{f.name}</span>
+                {!f.exists && <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>(not generated yet)</span>}
+              </div>
+            ))}
+            {contextInfo.meta?.generatedAt && (
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                Last generated: {new Date(contextInfo.meta.generatedAt).toLocaleString()}
+                {contextInfo.meta?.projectName && ` · for ${contextInfo.meta.projectName}`}
+              </div>
+            )}
+            {!contextInfo.meta?.generatedAt && !contextInfo.stale && (contextInfo.files || []).some(f => f.exists) && (
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                Context exists but metadata is missing — click Regenerate to refresh.
+              </div>
+            )}
+            {(contextInfo.files || []).every(f => !f.exists) && (
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                No context generated yet. It will be auto-generated when you create your first mission, or click Regenerate to do it now.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Loading…</div>
         )}
       </div>
 

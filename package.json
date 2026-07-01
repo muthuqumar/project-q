@@ -20,5 +20,13 @@
   "bin": {
     "pq": "./bin/pq.js",
     "project-q": "./bin/pq.js"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.1",
+    "@ai-sdk/google": "^4.0.2",
+    "@ai-sdk/openai": "^4.0.2",
+    "ai": "^7.0.4",
+    "ollama-ai-provider": "^1.2.0",
+    "zod": "^3.25.76"
   }
 }

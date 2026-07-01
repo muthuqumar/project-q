@@ -21,27 +21,44 @@ const { syncContextToCLAUDEMD } = require('../context-sync')
 
 const REQUIRED = ['PRD.md', 'ARCHITECTURE.md', 'TECH_STACK.md']
 const IGNORE   = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.cache', 'vendor', '.project-q', '__pycache__'])
+const META_FILE = '.meta.json'
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /**
- * Ensures all required context files exist.
- * If any are missing, scans the project and generates them with AI.
+ * Ensures all required context files exist AND were generated for the current project.
+ * If files are missing or were generated for a different directory, regenerates them.
  *
  * @param {string}   pqDir      – path to .project-q dir
  * @param {string}   projectDir – path to the target project
  * @param {object}   aiConfig   – AI config (passed through from mission)
  * @param {function} onProgress – optional callback(message) for status updates
+ * @param {boolean}  force      – force regeneration even if files exist
  * @returns {{ generated: boolean, files?: string[] }}
  */
-async function ensureProjectContext(pqDir, projectDir, aiConfig, onProgress) {
+async function ensureProjectContext(pqDir, projectDir, aiConfig, onProgress, force = false) {
   const contextDir = path.join(pqDir, 'context')
   await fs.ensureDir(contextDir)
 
+  // Check metadata to see if context was generated for the current project
+  const metaPath = path.join(contextDir, META_FILE)
+  let meta = {}
+  try { meta = await fs.readJson(metaPath) } catch {}
+
+  const projectMismatch = meta.projectDir && meta.projectDir !== projectDir
+  if (projectMismatch) {
+    onProgress?.(`[context-guard] Context was generated for a different project (${path.basename(meta.projectDir || '?')}). Regenerating for ${path.basename(projectDir)}…`)
+    // Remove stale context files so they get regenerated
+    for (const f of REQUIRED) {
+      const p = path.join(contextDir, f)
+      if (fs.existsSync(p)) await fs.remove(p)
+    }
+  }
+
   const missing = REQUIRED.filter(f => !fs.existsSync(path.join(contextDir, f)))
 
-  if (missing.length === 0) {
-    // Context files exist — make sure CLAUDE.md is also present
+  if (!force && !projectMismatch && missing.length === 0) {
+    // Context files exist and match — make sure CLAUDE.md is also present
     const claudeMdPath = path.join(projectDir, 'CLAUDE.md')
     if (!fs.existsSync(claudeMdPath)) {
       onProgress?.('[context-guard] CLAUDE.md missing — regenerating...')
@@ -50,7 +67,11 @@ async function ensureProjectContext(pqDir, projectDir, aiConfig, onProgress) {
     return { generated: false }
   }
 
-  onProgress?.(`[context-guard] Missing: ${missing.join(', ')} — scanning codebase to auto-generate context…`)
+  if (force) {
+    onProgress?.(`[context-guard] Force-regenerating context for ${path.basename(projectDir)}…`)
+  } else {
+    onProgress?.(`[context-guard] Missing: ${missing.join(', ')} — scanning codebase to auto-generate context…`)
+  }
 
   // 1. Scan project
   const scan = await quickScan(projectDir)
@@ -83,7 +104,15 @@ async function ensureProjectContext(pqDir, projectDir, aiConfig, onProgress) {
     }
   }
 
-  // 4. Write CLAUDE.md so every subsequent claude CLI invocation picks it up
+  // 4. Save metadata so we can detect stale context on future runs
+  await fs.writeJson(metaPath, {
+    projectDir,
+    projectName: path.basename(projectDir),
+    generatedAt: new Date().toISOString(),
+    files: generated,
+  }, { spaces: 2 })
+
+  // 5. Write CLAUDE.md so every subsequent claude CLI invocation picks it up
   await syncContextToCLAUDEMD(projectDir, pqDir)
   onProgress?.('[context-guard] CLAUDE.md synced — context ready')
 
@@ -260,4 +289,8 @@ Based on this scan, generate the following three context documents. Infer from e
 Be thorough and factual. Only document what you can observe from the scan above.`
 }
 
-module.exports = { ensureProjectContext }
+async function regenerateProjectContext(pqDir, projectDir, aiConfig, onProgress) {
+  return ensureProjectContext(pqDir, projectDir, aiConfig, onProgress, true)
+}
+
+module.exports = { ensureProjectContext, regenerateProjectContext }

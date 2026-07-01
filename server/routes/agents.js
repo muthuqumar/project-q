@@ -18,7 +18,7 @@ const express = require('express')
 const router = express.Router()
 const { planMission } = require('../services/agents/orchestrator')
 const { executeStep } = require('../services/agents/executor')
-const { ensureProjectContext } = require('../services/agents/context-guard')
+const { ensureProjectContext, regenerateProjectContext } = require('../services/agents/context-guard')
 const {
   listMissions, getMission, createMission, updateMission, appendLog, deleteMission
 } = require('../services/agents/mission-store')
@@ -26,6 +26,15 @@ const fs = require('fs-extra')
 const path = require('path')
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Derive a short display title from a free-form description. */
+function deriveTitle(description = '') {
+  // Use the first sentence or first 60 characters, whichever is shorter
+  const firstLine = description.split('\n')[0].trim()
+  const firstSentence = firstLine.split(/[.!?]/)[0].trim()
+  const base = firstSentence || firstLine
+  return base.length > 60 ? base.slice(0, 57).trimEnd() + '…' : base
+}
 
 function emit(io, event, data) {
   io.emit(`mission:${event}`, data)
@@ -112,25 +121,34 @@ async function startMission(pqDir, projectDir, io, task, aiConfig) {
   return mission
 }
 
-async function runPlanning(pqDir, projectDir, io, missionId, task, aiConfig) {
+async function runPlanning(pqDir, projectDir, io, missionId, task, aiConfig, answeredQuestions = []) {
+  // Persist 'planning' status to DB immediately so refresh shows correct state
+  await updateMission(pqDir, missionId, { status: 'planning' })
   try {
     emit(io, 'updated', { id: missionId, status: 'planning', message: 'Orchestrator is planning...' })
-    await appendLog(pqDir, missionId, { agent: 'Orchestrator', message: 'Analysing task and codebase...', type: 'info' })
+    await appendLog(pqDir, missionId, { agent: 'Orchestrator', message: answeredQuestions.length > 0 ? `Re-planning with ${answeredQuestions.length} clarification(s)…` : 'Analysing task and codebase...', type: 'info' })
 
-    const plan = await planMission(task, pqDir, projectDir, aiConfig)
+    const plan = await planMission(task, pqDir, projectDir, aiConfig, answeredQuestions)
     const hasMissingInfo = plan.missingInfo && plan.missingInfo.length > 0
 
     const updated = await updateMission(pqDir, missionId, {
       plan,
       steps: plan.steps,
-      pendingQuestions: plan.missingInfo || [],
+      // Preserve already-answered questions alongside any new ones
+      pendingQuestions: [
+        ...answeredQuestions,
+        ...(plan.missingInfo || []),
+      ],
       status: hasMissingInfo ? 'awaiting_info' : 'awaiting_approval',
     })
 
     if (hasMissingInfo) {
+      const newQCount = plan.missingInfo.length
+      const prevQCount = answeredQuestions.length
+      const contextNote = prevQCount > 0 ? ` (${prevQCount} already answered)` : ''
       await appendLog(pqDir, missionId, {
         agent: 'Orchestrator',
-        message: `${plan.missingInfo.length} question(s) need answering before work can begin`,
+        message: `${newQCount} question(s) need answering before work can begin${contextNote}`,
         type: 'warn'
       })
       emit(io, 'info_needed', { id: missionId, questions: plan.missingInfo, taskTitle: task.title })
@@ -144,8 +162,14 @@ async function runPlanning(pqDir, projectDir, io, missionId, task, aiConfig) {
 
     emit(io, 'plan_ready', updated)
   } catch (err) {
-    await updateMission(pqDir, missionId, { status: 'failed' })
-    await appendLog(pqDir, missionId, { agent: 'Orchestrator', message: `Planning failed: ${err.message}`, type: 'error' })
+    // If we had answered questions, stay in awaiting_info so user can retry — don't permanently fail
+    const recoveryStatus = answeredQuestions.length > 0 ? 'awaiting_info' : 'failed'
+    await updateMission(pqDir, missionId, { status: recoveryStatus })
+    await appendLog(pqDir, missionId, {
+      agent: 'Orchestrator',
+      message: `Planning failed: ${err.message}${recoveryStatus === 'awaiting_info' ? ' — your answers were saved, you can retry' : ''}`,
+      type: 'error',
+    })
     emit(io, 'error', { id: missionId, error: err.message })
   }
 }
@@ -164,6 +188,26 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
   for (const step of mission.steps) {
     if (step.status === 'complete') continue
 
+    // Check pause request
+    const currentState = await getMission(pqDir, missionId)
+    if (currentState?.pauseRequested) {
+      await updateMission(pqDir, missionId, { status: 'paused', pauseRequested: false })
+      await appendLog(pqDir, missionId, { agent: 'Orchestrator', message: 'Execution paused', type: 'warn' })
+      emit(io, 'updated', { id: missionId, status: 'paused' })
+      return
+    }
+    // Check skip request
+    if (currentState?.skipCurrentStep) {
+      await updateMission(pqDir, missionId, { skipCurrentStep: false })
+      const skippedSteps = (await getMission(pqDir, missionId)).steps.map(s =>
+        s.id === step.id ? { ...s, status: 'skipped' } : s
+      )
+      await updateMission(pqDir, missionId, { steps: skippedSteps })
+      await appendLog(pqDir, missionId, { agent: 'User', message: `Skipped: ${step.subTask}`, type: 'warn' })
+      emit(io, 'step_complete', { missionId, stepId: step.id, result: { status: 'skipped', summary: 'Skipped by user' } })
+      continue
+    }
+
     try {
       // Mark step in_progress
       const steps = mission.steps.map(s => s.id === step.id ? { ...s, status: 'in_progress' } : s)
@@ -181,7 +225,19 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
         pqDir,
         projectDir,
         aiConfig,
-        (chunk) => emit(io, 'step_chunk', { missionId, stepId: step.id, chunk })
+        (chunk) => emit(io, 'step_chunk', { missionId, stepId: step.id, chunk }),
+        async (toolEvent) => {
+          const icons = { read_file: '📖', write_file: '✏️', list_files: '📂', search_code: '🔍', run_command: '🔧', task_complete: '✅' }
+          const icon = icons[toolEvent.name] || '⚙️'
+          const label = toolEvent.input?.path || toolEvent.input?.command || toolEvent.input?.pattern || toolEvent.input?.summary || ''
+          const entry = await appendLog(pqDir, missionId, {
+            agent: step.agentName,
+            message: `${icon} ${toolEvent.name}${label ? `: ${label}` : ''}`,
+            type: 'tool',
+          })
+          emit(io, 'updated', { id: missionId, newLogEntry: entry })
+          emit(io, 'step_tool', { missionId, stepId: step.id, tool: toolEvent })
+        }
       )
 
       if (result.status === 'needs_info') {
@@ -198,7 +254,17 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
 
       // Mark step complete
       const updatedSteps = (await getMission(pqDir, missionId)).steps.map(s =>
-        s.id === step.id ? { ...s, status: 'complete', result: result.summary, fileChanges: result.appliedChanges } : s
+        s.id === step.id ? {
+          ...s,
+          status: 'complete',
+          result: {
+            summary: result.summary,
+            modelName: result.modelName,
+            deliverable: result.deliverable || null,
+            verificationResults: result.verificationResults || [],
+          },
+          fileChanges: result.appliedChanges,
+        } : s
       )
       allFileChanges.push(...(result.appliedChanges || []))
 
@@ -219,13 +285,35 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
         type: 'success'
       })
 
+      // Surface verification failures as warnings
+      if (result.verificationResults?.length > 0) {
+        const failed = result.verificationResults.filter(r => !r.passed)
+        if (failed.length > 0) {
+          for (const r of failed) {
+            await appendLog(pqDir, missionId, {
+              agent: step.agentName,
+              message: `⚠️ Verification failed: ${r.script}\n${r.output.slice(0, 300)}`,
+              type: 'warn',
+            })
+          }
+          emit(io, 'updated', { id: missionId, message: `${failed.length} verification check(s) failed` })
+        } else {
+          await appendLog(pqDir, missionId, {
+            agent: step.agentName,
+            message: `✅ All verification checks passed (${result.verificationResults.map(r => r.script).join(', ')})`,
+            type: 'success',
+          })
+        }
+      }
+
       if (result.warnings?.length > 0) {
         for (const w of result.warnings) {
           await appendLog(pqDir, missionId, { agent: step.agentName, message: `Warning: ${w}`, type: 'warn' })
         }
       }
     } catch (err) {
-      const steps = (await getMission(pqDir, missionId)).steps.map(s =>
+      const failedMission = await getMission(pqDir, missionId)
+      const steps = (failedMission?.steps || []).map(s =>
         s.id === step.id ? { ...s, status: 'failed' } : s
       )
       await updateMission(pqDir, missionId, { steps })
@@ -280,21 +368,32 @@ router.get('/missions/:id', async (req, res) => {
   }
 })
 
-// POST /api/agents/missions — manually create from task
+// POST /api/agents/missions — manually create from task or direct description
 router.post('/missions', async (req, res) => {
   const pqDir = req.app.get('pqDir')
   const projectDir = req.app.get('projectDir')
   const io = req.app.get('io')
   const aiConfig = req.app.get('aiConfig')
-  const { taskId, approvalMode } = req.body
+  const { taskId, approvalMode, taskTitle, taskDescription, stepApproval } = req.body
 
   try {
-    const tasks = await loadTasks(pqDir)
-    const task = tasks.find(t => t.id === taskId)
-    if (!task) return res.status(404).json({ error: 'Task not found' })
+    let task
+    if (taskId) {
+      const tasks = await loadTasks(pqDir)
+      task = tasks.find(t => t.id === taskId)
+      if (!task) return res.status(404).json({ error: 'Task not found' })
+    } else if (taskTitle || taskDescription) {
+      // Direct creation from MissionBoardPage — derive title from description if not provided
+      const desc = taskDescription || taskTitle
+      const derivedTitle = taskTitle || deriveTitle(desc)
+      task = { id: null, title: derivedTitle, description: desc }
+    } else {
+      return res.status(400).json({ error: 'taskId, taskTitle, or taskDescription required' })
+    }
 
     const mission = await startMission(pqDir, projectDir, io, task, aiConfig)
     if (approvalMode) await updateMission(pqDir, mission.id, { approvalMode })
+    if (stepApproval !== undefined) await updateMission(pqDir, mission.id, { stepApproval: !!stepApproval })
 
     res.status(201).json({ mission })
   } catch (err) {
@@ -308,25 +407,26 @@ router.post('/missions/:id/approve', async (req, res) => {
   const projectDir = req.app.get('projectDir')
   const io = req.app.get('io')
   const aiConfig = req.app.get('aiConfig')
-  const { approvalMode, approvedStepIds } = req.body  // approvalMode: 'all'|'individual'
+  const { approvalMode, approvedStepIds, stepIds } = req.body  // approvalMode: 'all'|'individual'
+  const selectedStepIds = stepIds || approvedStepIds  // support both param names
 
   try {
     const mission = await getMission(pqDir, req.params.id)
     if (!mission) return res.status(404).json({ error: 'Mission not found' })
 
     // If individual mode, mark only approved steps as approved
-    if (approvalMode === 'individual' && approvedStepIds?.length > 0) {
+    if (selectedStepIds?.length > 0) {
       const steps = mission.steps.map(s => ({
         ...s,
-        approved: approvedStepIds.includes(s.id)
+        approved: selectedStepIds.includes(s.id)
       }))
       await updateMission(pqDir, req.params.id, { steps, approvalMode: 'individual' })
     }
 
     await appendLog(pqDir, req.params.id, {
       agent: 'User',
-      message: approvalMode === 'individual'
-        ? `Approved ${approvedStepIds?.length || 0} step(s) individually`
+      message: selectedStepIds?.length > 0
+        ? `Approved ${selectedStepIds.length} step(s) individually`
         : 'Full plan approved',
       type: 'success'
     })
@@ -346,24 +446,42 @@ router.post('/missions/:id/answer', async (req, res) => {
   const projectDir = req.app.get('projectDir')
   const io = req.app.get('io')
   const aiConfig = req.app.get('aiConfig')
-  const { questionId, answer } = req.body
+  const { questionId, answer, answers } = req.body  // support single or array format
 
   try {
     const mission = await getMission(pqDir, req.params.id)
     if (!mission) return res.status(404).json({ error: 'Mission not found' })
 
+    // Build answer map: support { questionId, answer } or { answers: [{id, answer}] }
+    const answerMap = {}
+    if (answers && Array.isArray(answers)) {
+      for (const { id, answer: a } of answers) answerMap[id] = a
+    } else if (questionId && answer !== undefined) {
+      answerMap[questionId] = answer
+    }
+
     const questions = mission.pendingQuestions.map(q =>
-      q.id === questionId ? { ...q, answer, answeredAt: new Date().toISOString() } : q
+      answerMap[q.id] !== undefined ? { ...q, answer: answerMap[q.id], answeredAt: new Date().toISOString() } : q
     )
     const allAnswered = questions.every(q => q.answer)
 
+    // If all answered AND we will re-plan, set status to 'planning' immediately so the UI
+    // shows the right state even if the client refreshes during re-planning.
+    const willRePlan = allAnswered && mission.plan && mission.status === 'awaiting_info' && !mission.startedAt
+    const willResumeExecution = allAnswered && mission.startedAt
+    const newStatus = willRePlan ? 'planning' : allAnswered && !willResumeExecution ? 'awaiting_approval' : 'awaiting_info'
+
     await updateMission(pqDir, req.params.id, {
       pendingQuestions: questions,
-      status: allAnswered ? 'awaiting_approval' : 'awaiting_info',
+      status: newStatus,
     })
+    // Build a readable log message from whichever answer format was used
+    const logAnswer = answer != null
+      ? String(answer)
+      : Object.values(answerMap).join('; ')
     await appendLog(pqDir, req.params.id, {
       agent: 'User',
-      message: `Answered: "${answer.slice(0, 80)}${answer.length > 80 ? '…' : ''}"`,
+      message: `Answered: "${logAnswer.slice(0, 80)}${logAnswer.length > 80 ? '…' : ''}"`,
       type: 'info'
     })
 
@@ -373,11 +491,23 @@ router.post('/missions/:id/answer', async (req, res) => {
     if (allAnswered && mission.plan) {
       // Re-plan if this was from planning phase, or resume execution if mid-step
       if (['awaiting_info'].includes(mission.status) && !mission.startedAt) {
+        const allAnsweredQuestions = questions.filter(q => q.answer)
+        await appendLog(pqDir, req.params.id, {
+          agent: 'Orchestrator',
+          message: `All ${allAnsweredQuestions.length} question(s) answered — re-planning now…`,
+          type: 'info',
+        })
         setImmediate(() => runPlanning(pqDir, projectDir, io, req.params.id,
           { id: mission.taskId, title: mission.taskTitle, description: mission.taskDescription },
-          aiConfig
+          aiConfig,
+          allAnsweredQuestions
         ))
       } else if (mission.startedAt) {
+        await appendLog(pqDir, req.params.id, {
+          agent: 'Orchestrator',
+          message: 'All questions answered — resuming execution…',
+          type: 'info',
+        })
         setImmediate(() => runExecution(pqDir, projectDir, io, req.params.id, aiConfig))
       }
     }
@@ -426,6 +556,166 @@ router.post('/missions/:id/retry', async (req, res) => {
   }
 })
 
+// Pause
+router.post('/missions/:id/pause', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const io = req.app.get('io')
+  try {
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    if (mission.status !== 'executing') return res.status(400).json({ error: 'Mission is not executing' })
+    await updateMission(pqDir, mission.id, { pauseRequested: true })
+    await appendLog(pqDir, mission.id, { agent: 'User', message: 'Pause requested — will stop after current step', type: 'warn' })
+    emit(io, 'updated', { id: mission.id, pauseRequested: true })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// Resume
+router.post('/missions/:id/resume', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
+  const io = req.app.get('io')
+  const aiConfig = req.app.get('aiConfig')
+  try {
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    if (mission.status !== 'paused') return res.status(400).json({ error: 'Mission is not paused' })
+    await updateMission(pqDir, mission.id, { status: 'executing', pauseRequested: false })
+    await appendLog(pqDir, mission.id, { agent: 'User', message: 'Execution resumed', type: 'info' })
+    emit(io, 'updated', { id: mission.id, status: 'executing' })
+    setImmediate(() => runExecution(pqDir, projectDir, io, mission.id, aiConfig))
+    const updated = await getMission(pqDir, mission.id)
+    res.json({ mission: updated })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// Skip step
+router.post('/missions/:id/skip-step', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const io = req.app.get('io')
+  try {
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    await updateMission(pqDir, mission.id, { skipCurrentStep: true })
+    await appendLog(pqDir, mission.id, { agent: 'User', message: 'Skip requested for current step', type: 'warn' })
+    emit(io, 'updated', { id: mission.id, skipCurrentStep: true })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// Rollback
+router.post('/missions/:id/rollback', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
+  const io = req.app.get('io')
+  try {
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    if (!['complete','failed','cancelled','paused'].includes(mission.status)) {
+      return res.status(400).json({ error: 'Can only rollback completed, failed, paused, or cancelled missions' })
+    }
+    const allChanges = mission.fileChanges || []
+    if (allChanges.length === 0) return res.json({ ok: true, message: 'No file changes to rollback' })
+
+    const { execSync } = require('child_process')
+    const rolledBack = []
+    const failed = []
+
+    for (const change of allChanges) {
+      try {
+        if (change.action === 'delete') {
+          failed.push(`${change.path} (was deleted — restore from git manually)`)
+        } else {
+          try {
+            execSync(`git checkout HEAD -- "${change.path}"`, { cwd: projectDir, encoding: 'utf8' })
+          } catch {
+            const abs = require('path').join(projectDir, change.path)
+            if (require('fs-extra').existsSync(abs)) require('fs-extra').removeSync(abs)
+          }
+          rolledBack.push(change.path)
+        }
+      } catch (e) {
+        failed.push(`${change.path}: ${e.message}`)
+      }
+    }
+
+    await updateMission(pqDir, mission.id, { status: 'cancelled', rolledBack: true })
+    await appendLog(pqDir, mission.id, {
+      agent: 'User',
+      message: `Rolled back ${rolledBack.length} file(s)${failed.length ? `. Skipped: ${failed.join(', ')}` : ''}`,
+      type: 'warn',
+    })
+    emit(io, 'updated', { id: mission.id, status: 'cancelled', rolledBack: true })
+    res.json({ ok: true, rolledBack, failed })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// PATCH /api/agents/missions/:id/plan — edit plan summary + steps before execution
+router.patch('/missions/:id/plan', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const io = req.app.get('io')
+  const { summary, steps } = req.body
+  try {
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    if (!['awaiting_approval', 'awaiting_info'].includes(mission.status)) {
+      return res.status(400).json({ error: 'Plan can only be edited before execution starts' })
+    }
+    const updatedPlan = {
+      ...(mission.plan || {}),
+      ...(summary !== undefined ? { summary } : {}),
+      ...(steps ? { steps } : {}),
+    }
+    // Merge step edits — preserve runtime fields (status, result, fileChanges) from original
+    const mergedSteps = steps
+      ? steps.map(editedStep => {
+          const original = (mission.steps || []).find(s => s.id === editedStep.id) || {}
+          return { ...original, ...editedStep, status: original.status || 'pending' }
+        })
+      : mission.steps
+    const updated = await updateMission(pqDir, req.params.id, {
+      plan: updatedPlan,
+      steps: mergedSteps,
+    })
+    await appendLog(pqDir, req.params.id, { agent: 'User', message: 'Tech spec edited', type: 'info' })
+    emit(io, 'updated', updated)
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Toggle step-by-step approval
+router.patch('/missions/:id/step-approval', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const io = req.app.get('io')
+  try {
+    const { stepApproval } = req.body
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    await updateMission(pqDir, mission.id, { stepApproval: !!stepApproval })
+    emit(io, 'updated', { id: mission.id, stepApproval: !!stepApproval })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// POST /api/agents/missions/:id/cancel — cancel via POST (used by frontend)
+router.post('/missions/:id/cancel', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const io = req.app.get('io')
+  try {
+    const mission = await getMission(pqDir, req.params.id)
+    if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    await updateMission(pqDir, req.params.id, { status: 'cancelled' })
+    await appendLog(pqDir, req.params.id, { agent: 'User', message: 'Mission cancelled', type: 'warn' })
+    emit(io, 'updated', { id: req.params.id, status: 'cancelled' })
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // DELETE /api/agents/missions/:id — cancel
 router.delete('/missions/:id', async (req, res) => {
   const pqDir = req.app.get('pqDir')
@@ -453,6 +743,70 @@ router.post('/pickup', async (req, res) => {
     res.json({ success: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/agents/context — return context metadata (what project, when generated)
+router.get('/context', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
+  const path = require('path')
+  const fs = require('fs-extra')
+  try {
+    const contextDir = path.join(pqDir, 'context')
+    const metaPath = path.join(contextDir, '.meta.json')
+    let meta = {}
+    try { meta = await fs.readJson(metaPath) } catch {}
+    const files = ['PRD.md', 'ARCHITECTURE.md', 'TECH_STACK.md'].map(f => ({
+      name: f,
+      exists: fs.existsSync(path.join(contextDir, f)),
+    }))
+    const stale = meta.projectDir && meta.projectDir !== projectDir
+    res.json({ projectDir, meta, files, stale })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/agents/context/regenerate — force-regenerate all context files
+router.post('/context/regenerate', async (req, res) => {
+  const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
+  const io = req.app.get('io')
+  const aiConfig = req.app.get('aiConfig')
+  try {
+    // Emit progress via socket so the UI can show real-time status
+    const onProgress = (msg) => {
+      io.emit('context:progress', { message: msg })
+    }
+    onProgress('🔍 Scanning project structure…')
+    const result = await regenerateProjectContext(pqDir, projectDir, aiConfig, onProgress)
+    io.emit('context:ready', { projectDir, files: result.files })
+    res.json({ success: true, files: result.files })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET deliverable content for a step
+router.get('/missions/:id/deliverable/:agentId', async (req, res) => {
+  const { id, agentId } = req.params
+  const pqDir = req.app.get('pqDir')
+  const deliverableMap = {
+    'mallory':       'scope.md',
+    'quartermaster': 'design.md',
+    'james-bond':    'implementation-summary.md',
+    'moneypenny':    'test-plan.md',
+    'tanner':        'test-plan.md',
+  }
+  const filename = deliverableMap[agentId]
+  if (!filename) return res.status(400).json({ error: 'No deliverable for this agent' })
+  const filePath = path.join(pqDir, 'missions', id, filename)
+  try {
+    const content = await fs.readFile(filePath, 'utf8')
+    res.json({ content, filename })
+  } catch {
+    res.status(404).json({ error: 'Deliverable not found' })
   }
 })
 
