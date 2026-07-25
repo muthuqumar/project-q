@@ -18,84 +18,38 @@ const path = require('path')
 async function buildContext(pqDir, projectDir) {
   const ctx = {}
 
-  // ── Generated context files (increased limit) ─────────────────────────────
+  // ── Generated context docs — the primary source of project understanding ──
   const contextDir = path.join(pqDir, 'context')
   for (const name of ['PRD.md', 'ARCHITECTURE.md', 'TECH_STACK.md']) {
     const p = path.join(contextDir, name)
     if (fs.existsSync(p)) {
-      ctx[name] = (await fs.readFile(p, 'utf8')).slice(0, 6000)
+      ctx[name] = (await fs.readFile(p, 'utf8')).slice(0, 4000)
     }
   }
 
+  // ── Directory tree (dirs only, language-agnostic) ─────────────────────────
+  // Agents pull specific files with read_file during execution — no need to
+  // eager-load configs or entry points here.
   try {
-    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.project-q', 'vendor', '__pycache__', '.turbo', 'out'])
-
-    // ── Multi-level directory tree ────────────────────────────────────────────
-    // Walk up to 3 levels deep for a real picture of the codebase structure
-    const buildTree = async (dir, depth, prefix = '') => {
+    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.project-q', 'vendor', '__pycache__', '.turbo', 'out', 'target', '.venv', 'venv', '__pypackages__'])
+    const buildDirTree = async (dir, depth, prefix = '') => {
       if (depth === 0) return ''
       let lines = ''
       try {
         const entries = await fs.readdir(dir, { withFileTypes: true })
-        const filtered = entries
-          .filter(e => !IGNORE.has(e.name) && !e.name.startsWith('.'))
-          .slice(0, 40)
-        for (const entry of filtered) {
-          const isDir = entry.isDirectory()
-          lines += `${prefix}${isDir ? '📁' : '📄'} ${entry.name}\n`
-          if (isDir && depth > 1) {
-            lines += await buildTree(path.join(dir, entry.name), depth - 1, prefix + '  ')
+        const dirs = entries
+          .filter(e => e.isDirectory() && !IGNORE.has(e.name) && !e.name.startsWith('.'))
+          .slice(0, 25)
+        for (const entry of dirs) {
+          lines += `${prefix}${entry.name}/\n`
+          if (depth > 1) {
+            lines += await buildDirTree(path.join(dir, entry.name), depth - 1, prefix + '  ')
           }
         }
       } catch {}
       return lines
     }
-
-    ctx.projectStructure = await buildTree(projectDir, 3)
-
-    // ── package.json — scripts + deps ────────────────────────────────────────
-    const pkgPath = path.join(projectDir, 'package.json')
-    if (fs.existsSync(pkgPath)) {
-      const pkg = await fs.readJson(pkgPath)
-      ctx.packageJson = JSON.stringify({
-        name: pkg.name,
-        scripts: pkg.scripts,
-        dependencies: pkg.dependencies,
-        devDependencies: pkg.devDependencies,
-      }, null, 2).slice(0, 3000)
-    }
-
-    // ── Key config files ──────────────────────────────────────────────────────
-    const configCandidates = ['tsconfig.json', 'tsconfig.base.json', 'vite.config.ts', 'next.config.js', 'next.config.ts', 'webpack.config.js', '.eslintrc.js', '.eslintrc.json', 'jest.config.js', 'jest.config.ts']
-    const foundConfigs = []
-    for (const name of configCandidates) {
-      const p = path.join(projectDir, name)
-      if (fs.existsSync(p)) {
-        const content = (await fs.readFile(p, 'utf8')).slice(0, 1500)
-        foundConfigs.push(`### ${name}\n${content}`)
-      }
-    }
-    if (foundConfigs.length > 0) {
-      ctx.configFiles = foundConfigs.join('\n\n')
-    }
-
-    // ── Entry point file ──────────────────────────────────────────────────────
-    // Include the project's main entry to show real code style/patterns
-    const entryCandidates = [
-      'src/main.ts', 'src/main.tsx', 'src/index.ts', 'src/index.tsx',
-      'src/app.ts', 'src/app.tsx', 'src/App.tsx', 'src/App.ts',
-      'app/layout.tsx', 'app/page.tsx', 'pages/index.tsx', 'pages/_app.tsx',
-      'src/server.ts', 'server.ts', 'index.ts', 'index.js',
-    ]
-    for (const candidate of entryCandidates) {
-      const p = path.join(projectDir, candidate)
-      if (fs.existsSync(p)) {
-        const content = (await fs.readFile(p, 'utf8')).slice(0, 2000)
-        ctx.entryPoint = `### ${candidate}\n${content}`
-        break
-      }
-    }
-
+    ctx.projectStructure = await buildDirTree(projectDir, 3)
   } catch (err) {
     console.error('[orchestrator] buildContext error:', err.message)
   }
@@ -235,25 +189,64 @@ function parsePlan(raw) {
 
 // ── Main plan function ────────────────────────────────────────────────────────
 
+/**
+ * Normalize a Vercel AI SDK v7 result's usage + Anthropic providerMetadata
+ * into the shape our pricing module expects. Handles both sync (generateText)
+ * and async (streamText) shapes defensively.
+ */
+async function extractUsage(result) {
+  try {
+    const usage = await Promise.resolve(result?.usage || {})
+    const providerMeta = await Promise.resolve(result?.providerMetadata || {})
+    const meta = providerMeta?.anthropic || {}
+    return {
+      inputTokens:      Number(usage.inputTokens      ?? usage.promptTokens     ?? 0),
+      outputTokens:     Number(usage.outputTokens     ?? usage.completionTokens ?? 0),
+      cacheReadTokens:  Number(meta.cacheReadInputTokens     ?? usage.cachedInputTokens ?? 0),
+      cacheWriteTokens: Number(meta.cacheCreationInputTokens ?? 0),
+    }
+  } catch {
+    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  }
+}
+
 async function planMission(task, pqDir, projectDir, aiConfig, answeredQuestions = []) {
   const context = await buildContext(pqDir, projectDir)
   const prompt = buildPlanningPrompt(task, context, answeredQuestions)
 
   let raw
+  let usage = null
+  let modelName = null
   const { supportsVercelLoop, getModelForRole } = require('../ai/model-factory')
+  const { computeCost } = require('../ai/pricing')
+
+  // Re-plans (with answered questions) use a cheaper model — the reasoning
+  // burden is much smaller when the initial plan already exists.
+  const role = answeredQuestions.length > 0 ? 're-planner' : 'orchestrator'
 
   if (supportsVercelLoop(aiConfig?.provider)) {
     try {
       const { generateText } = require('ai')
-      const { model, modelName } = getModelForRole('orchestrator', aiConfig)
-      console.log(`[orchestrator] planning with ${modelName}`)
+      const picked = getModelForRole(role, aiConfig)
+      modelName = picked.modelName
+      console.log(`[orchestrator] planning with ${modelName} (role: ${role})`)
+
+      // ── Prompt caching: mark the persona as cacheable so repeated planning
+      // calls (re-plans, retries) hit the cache at ~10% of input cost.
       const result = await generateText({
-        model,
-        system: getPersona('orchestrator'),
-        prompt,
-        maxTokens: 8192,
+        model: picked.model,
+        messages: [
+          {
+            role: 'system',
+            content: getPersona('orchestrator'),
+            providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+          },
+          { role: 'user', content: prompt },
+        ],
+        maxOutputTokens: 4096,
       })
       raw = result.text
+      usage = await extractUsage(result)
     } catch (e) {
       console.warn('[orchestrator] Vercel generateText failed, falling back:', e.message)
       const ai = new AIService({ ...(aiConfig || {}), projectDir: null })
@@ -266,7 +259,13 @@ async function planMission(task, pqDir, projectDir, aiConfig, answeredQuestions 
     raw = await ai.complete(prompt)
   }
 
-  return parsePlan(raw)
+  const plan = parsePlan(raw)
+  const costInfo = usage && modelName ? computeCost(modelName, usage) : { costUSD: 0, priced: false }
+
+  return {
+    plan,
+    usage: usage ? { ...usage, modelName, costUSD: costInfo.costUSD, priced: costInfo.priced, phase: role } : null,
+  }
 }
 
 module.exports = { planMission, buildContext }

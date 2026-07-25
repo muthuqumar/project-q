@@ -10,6 +10,7 @@ const { getPersona } = require('./registry')
 const { ensureProjectContext } = require('./context-guard')
 const { getModelForRole, supportsVercelLoop } = require('../ai/model-factory')
 const { buildTools } = require('./agent-tools')
+const { retrieveSeedFiles, retrieveFileList, formatRetrievedBlock } = require('../retrieval/retrieve')
 const fs   = require('fs-extra')
 const path = require('path')
 const { execSync } = require('child_process')
@@ -85,6 +86,29 @@ function diffMtimes(before, after, projectDir, now) {
   return changes
 }
 
+// ── Git working-tree changes (for QA seeding) ─────────────────────────────────
+// The files James Bond actually touched this mission — Moneypenny's true seed.
+// Excludes deletions, project-q deliverables, and the auto-generated CLAUDE.md.
+function gitChangedFiles(projectDir) {
+  try {
+    // -uall expands new untracked directories into individual files (else a brand-new
+    // dir shows as a single entry and its files never reach QA).
+    const out = execSync('git status --porcelain -uall', { cwd: projectDir, encoding: 'utf8', timeout: 5000 }).trim()
+    if (!out) return []
+    const files = []
+    for (const line of out.split('\n')) {
+      const status = line.slice(0, 2)
+      if (status.includes('D')) continue                    // skip deletions
+      let p = line.slice(3).trim()
+      if (p.includes(' -> ')) p = p.split(' -> ').pop().trim() // renames: keep new path
+      p = p.replace(/^"/, '').replace(/"$/, '')
+      if (!p || p.startsWith('.project-q/') || p === 'CLAUDE.md') continue
+      files.push(p)
+    }
+    return [...new Set(files)]
+  } catch { return [] }
+}
+
 // ── Deliverable paths ─────────────────────────────────────────────────────────
 
 function getDeliverableDir(pqDir, missionId) {
@@ -128,7 +152,7 @@ Only after completing all steps: write your scope.md deliverable and call task_c
 Do these steps in order before writing your design document:
 
 1. **Read Mallory's scope** (already injected above if available) — understand what was found
-2. **Read every "Key Files Found"** from scope.md — use read_file on each one, do not skip
+2. **Review the pre-loaded "Key Files Found"** under "Retrieved Files" — their contents are injected above. read_file only for ones missing there, marked truncated, or that you suspect Mallory overlooked
 3. **Understand patterns**: read 1-2 similar existing implementations to understand the code style
 4. **Check interfaces**: read any TypeScript interfaces/types related to your design area
 5. **Identify integration points**: use search_code to find where the feature will connect
@@ -142,7 +166,7 @@ Only after completing all steps: write your design.md deliverable and call task_
 Do these steps in order — skipping any step risks breaking things:
 
 1. **Read Q's design.md completely** (already injected above) — understand every file in the "Files to Change" table
-2. **Read EACH file you will modify** — use read_file on every file before touching it
+2. **Review the pre-loaded files** under "Retrieved Files" — their current contents are already injected above. Only call read_file for a file that is missing there or marked truncated
 3. **Check for existing similar implementations**: search_code for patterns you'll replicate
 4. **Understand the test setup**: find and read one existing test file so you match the pattern
 5. **Implement**: write complete, production-quality code — no partial implementations
@@ -161,7 +185,7 @@ Do these steps in order:
 2. **Read J's implementation-summary.md** (injected above) — understand what was built and any deviations
 3. **Find existing test files**: use list_files and search_code to locate test files for this feature area
 4. **Read one existing test file**: understand the test framework, import style, assertion patterns
-5. **Read the actual implementation**: use read_file to read each file J changed — test what's really there
+5. **Review the changed files** under "Retrieved Files" — the files J actually changed are pre-loaded above (from the working tree). Test what's really there, not just what the design planned. read_file only for untruncated detail you still need
 6. **Write or extend tests**: use write_file to create/update test files matching existing patterns
 7. **Run tests**: use run_command to run the test suite — capture the output
 8. **Write test plan**: document what you tested, what passed, what failed
@@ -188,7 +212,7 @@ Only after writing tests and running them: write your test-plan.md and call task
 
 // ── Prompt ────────────────────────────────────────────────────────────────────
 
-async function buildAgenticPrompt(step, mission, pqDir) {
+async function buildAgenticPrompt(step, mission, pqDir, projectDir) {
   await fs.ensureDir(getDeliverableDir(pqDir, mission.id))
 
   const answeredQ = (mission.pendingQuestions || [])
@@ -205,12 +229,49 @@ async function buildAgenticPrompt(step, mission, pqDir) {
     if (scopePath && fs.existsSync(scopePath)) {
       const scopeDoc = await fs.readFile(scopePath, 'utf8')
       upstreamContext = `\n\n## Scope Document from Mallory\n\n${scopeDoc}\n\n> Use this scope to guide your technical design. Mallory has already identified the relevant files and patterns.`
+
+      // ── Step 2 (extended): deliverable-seeded retrieval for the architect ──
+      // Pre-load Mallory's "Key Files Found" as a head start. Smaller budget than
+      // James Bond and softer framing — Mallory's list is lower-precision and Q
+      // must stay free to explore beyond it. Fail-safe: fall back to tools on error.
+      if (projectDir) {
+        try {
+          const retrieved = await retrieveSeedFiles(scopeDoc, {
+            source: 'scope', projectDir, perFileBudget: 8000, totalBudget: 32000,
+          })
+          const block = formatRetrievedBlock(retrieved, {
+            deliverableLabel: "Mallory's scope", framing: 'starting-points',
+          })
+          if (block) {
+            upstreamContext += `\n\n${block}`
+            console.log(`[retrieval] quartermaster: pre-loaded ${retrieved.files.length} file(s), ${retrieved.usedChars} chars, ${retrieved.skipped.length} skipped`)
+          }
+        } catch (e) {
+          console.warn('[retrieval] scope retrieval failed, falling back to tools:', e.message)
+        }
+      }
     }
   } else if (step.agentId === 'james-bond') {
     const designPath = getDeliverablePath(pqDir, mission.id, 'quartermaster')
     if (designPath && fs.existsSync(designPath)) {
       const designDoc = await fs.readFile(designPath, 'utf8')
       upstreamContext = `\n\n## Design Specification from Quartermaster\n\n${designDoc}\n\n> Follow this spec. Document any deviations in your implementation summary.`
+
+      // ── Step 2: deliverable-seeded retrieval ────────────────────────────
+      // Pre-load the files Q's design targets so Bond starts with them in hand
+      // instead of re-grepping. Fail-safe: on any error, fall back to tools.
+      if (projectDir) {
+        try {
+          const retrieved = await retrieveSeedFiles(designDoc, { source: 'design', projectDir, neighbors: true })
+          const block = formatRetrievedBlock(retrieved, { deliverableLabel: "Q's design" })
+          if (block) {
+            upstreamContext += `\n\n${block}`
+            console.log(`[retrieval] james-bond: pre-loaded ${retrieved.files.length} file(s) + ${retrieved.neighbors.length} neighbor(s), ${retrieved.usedChars} chars, ${retrieved.skipped.length} skipped`)
+          }
+        } catch (e) {
+          console.warn('[retrieval] seed retrieval failed, falling back to tools:', e.message)
+        }
+      }
     }
   } else if (step.agentId === 'moneypenny' || step.agentId === 'tanner') {
     const designPath = getDeliverablePath(pqDir, mission.id, 'quartermaster')
@@ -222,6 +283,26 @@ async function buildAgenticPrompt(step, mission, pqDir) {
     if (implPath && fs.existsSync(implPath)) {
       const implDoc = await fs.readFile(implPath, 'utf8')
       upstreamContext += `\n\n## Implementation Summary from James Bond\n\n${implDoc}`
+    }
+
+    // ── Step 3b: git-diff-seeded retrieval for QA ──────────────────────────
+    // Seed from what James Bond ACTUALLY changed (working tree), not what the
+    // design planned — the gap between the two is exactly what QA must catch.
+    if (projectDir) {
+      try {
+        const changed = gitChangedFiles(projectDir)
+        if (changed.length) {
+          const entries = changed.map(p => ({ path: p, note: 'changed in this mission' }))
+          const retrieved = await retrieveFileList(entries, { projectDir })
+          const block = formatRetrievedBlock(retrieved, { deliverableLabel: "James Bond's changes", framing: 'changed' })
+          if (block) {
+            upstreamContext += `\n\n${block}`
+            console.log(`[retrieval] moneypenny: pre-loaded ${retrieved.files.length} changed file(s), ${retrieved.usedChars} chars`)
+          }
+        }
+      } catch (e) {
+        console.warn('[retrieval] git-diff retrieval failed, falling back to tools:', e.message)
+      }
     }
   }
 
@@ -261,13 +342,62 @@ in your response before calling task_complete.`
 
 // ── Vercel AI SDK loop ────────────────────────────────────────────────────────
 
+/**
+ * Per-agent maxSteps ceilings — most agents don't need 30 iterations.
+ * Bounding this prevents runaway loops from burning tokens.
+ */
+const MAX_STEPS_BY_AGENT = {
+  mallory:       20,
+  quartermaster: 10,
+  'james-bond':  15,
+  moneypenny:    12,
+  tanner:        12,
+  felix:          5,
+}
+
+/**
+ * Extract usage from a streamText/generateText result into a flat, priceable shape.
+ *
+ * AI SDK v4 (via @ai-sdk/anthropic) reports usage as NESTED objects, not numbers:
+ *   usage.inputTokens  = { total, noCache, cacheRead, cacheWrite }
+ *   usage.outputTokens = { total, text, reasoning }
+ * Reading `usage.inputTokens` as a number yields NaN → $0 cost. We read the nested
+ * fields, and fall back to the older flat shape (promptTokens/completionTokens) and
+ * providerMetadata for other providers. `inputTokens` here is the FRESH (noCache)
+ * count — cache reads/writes are returned separately and priced on their own.
+ */
+async function extractUsage(result) {
+  try {
+    const usage = await Promise.resolve(result?.usage || {})
+    const providerMeta = await Promise.resolve(result?.providerMetadata || {})
+    const meta = providerMeta?.anthropic || {}
+
+    const inT  = usage.inputTokens
+    const outT = usage.outputTokens
+    const nested = inT && typeof inT === 'object'
+
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+
+    return {
+      // Prefer nested noCache (fresh input); fall back to flat number / prompt tokens.
+      inputTokens: num(nested ? (inT.noCache ?? inT.total) : (inT ?? usage.promptTokens)),
+      outputTokens: num(outT && typeof outT === 'object' ? outT.total : (outT ?? usage.completionTokens)),
+      cacheReadTokens: num(nested ? inT.cacheRead : (meta.cacheReadInputTokens ?? usage.cachedInputTokens)),
+      cacheWriteTokens: num(nested ? inT.cacheWrite : meta.cacheCreationInputTokens),
+    }
+  } catch {
+    return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  }
+}
+
 async function runVercelLoop(step, mission, pqDir, projectDir, aiConfig, onChunk, onToolCall) {
   const { streamText } = require('ai')
+  const { computeCost } = require('../ai/pricing')
 
   const role = AGENT_ROLES[step.agentId] || 'implementer'
   const { model, modelName } = getModelForRole(role, aiConfig)
 
-  const prompt = await buildAgenticPrompt(step, mission, pqDir)
+  const prompt = await buildAgenticPrompt(step, mission, pqDir, projectDir)
   const systemPrompt = getPersona(step.agentId)
 
   const liveChanges = []
@@ -281,12 +411,28 @@ async function runVercelLoop(step, mission, pqDir, projectDir, aiConfig, onChunk
 
   let fullText = ''
 
+  // ── Prompt caching: BOTH the system persona and the initial user prompt are
+  // stable across every tool-loop turn (subsequent assistant/tool messages are
+  // appended after them). The user prompt is where the deliverable-seeded
+  // retrieval block lives (steps 2–3) — often the largest, most re-sent chunk —
+  // so caching it is the bigger cost lever. A cache breakpoint on the user
+  // message caches the whole system+user prefix; turns 2..N then pay ~10% of it.
   const result = streamText({
     model,
-    system: systemPrompt,
-    prompt,
+    messages: [
+      {
+        role: 'system',
+        content: systemPrompt,
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      },
+      {
+        role: 'user',
+        content: prompt,
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      },
+    ],
     tools,
-    maxSteps: 30,
+    maxSteps: MAX_STEPS_BY_AGENT[step.agentId] || 20,
     onChunk: ({ chunk }) => {
       if (chunk.type === 'text-delta') {
         fullText += chunk.textDelta
@@ -296,8 +442,15 @@ async function runVercelLoop(step, mission, pqDir, projectDir, aiConfig, onChunk
   })
 
   await result.text
+  const usage = await extractUsage(result)
+  const { costUSD, priced } = computeCost(modelName, usage)
 
-  return { fullText, modelName, liveChanges }
+  return {
+    fullText,
+    modelName,
+    liveChanges,
+    usage: { ...usage, modelName, costUSD, priced, phase: role },
+  }
 }
 
 // ── CLI role → model mapping ──────────────────────────────────────────────────
@@ -315,7 +468,7 @@ const CLI_ROLE_MODELS = {
 // ── CLI fallback ──────────────────────────────────────────────────────────────
 
 async function runCLIFallback(step, mission, pqDir, projectDir, aiConfig, onChunk) {
-  const prompt = await buildAgenticPrompt(step, mission, pqDir)
+  const prompt = await buildAgenticPrompt(step, mission, pqDir, projectDir)
 
   // Select model based on agent role — don't use the same model for every step
   const role = AGENT_ROLES[step.agentId] || 'implementer'
@@ -335,7 +488,14 @@ async function runCLIFallback(step, mission, pqDir, projectDir, aiConfig, onChun
     onChunk?.(chunk)
   }, { systemPrompt })
 
-  return { fullText: fullResponse, modelName: cliModel, liveChanges: detectChanges(beforeSnapshot, projectDir) }
+  // CLI providers don't expose token usage — return null so cost aggregation
+  // records the call but marks it unpriced.
+  return {
+    fullText: fullResponse,
+    modelName: cliModel,
+    liveChanges: detectChanges(beforeSnapshot, projectDir),
+    usage: null,
+  }
 }
 
 // ── Parse ─────────────────────────────────────────────────────────────────────
@@ -416,22 +576,22 @@ async function executeStep(step, mission, pqDir, projectDir, aiConfig, onChunk, 
 
   const beforeSnapshot = snapshotWorkingTree(projectDir)
 
-  let fullText, modelName, liveChanges
+  let fullText, modelName, liveChanges, usage
 
   if (supportsVercelLoop(aiConfig?.provider)) {
     try {
-      ;({ fullText, modelName, liveChanges } = await runVercelLoop(step, mission, pqDir, projectDir, aiConfig, onChunk, onToolCall))
+      ;({ fullText, modelName, liveChanges, usage } = await runVercelLoop(step, mission, pqDir, projectDir, aiConfig, onChunk, onToolCall))
     } catch (e) {
       console.warn('[executor] Vercel loop failed, falling back to CLI:', e.message)
-      ;({ fullText, modelName, liveChanges } = await runCLIFallback(step, mission, pqDir, projectDir, aiConfig, onChunk))
+      ;({ fullText, modelName, liveChanges, usage } = await runCLIFallback(step, mission, pqDir, projectDir, aiConfig, onChunk))
     }
   } else {
-    ;({ fullText, modelName, liveChanges } = await runCLIFallback(step, mission, pqDir, projectDir, aiConfig, onChunk))
+    ;({ fullText, modelName, liveChanges, usage } = await runCLIFallback(step, mission, pqDir, projectDir, aiConfig, onChunk))
   }
 
   const needsInfo = parseNeedsInfo(fullText)
   if (needsInfo.length > 0) {
-    return { status: 'needs_info', needsInfo, fileChanges: [], appliedChanges: [], commandResults: [], warnings: [], summary: '', rawResponse: fullText, modelName, deliverable: null }
+    return { status: 'needs_info', needsInfo, fileChanges: [], appliedChanges: [], commandResults: [], warnings: [], summary: '', rawResponse: fullText, modelName, deliverable: null, usage }
   }
 
   // Check if agent produced their mandatory deliverable
@@ -469,6 +629,7 @@ async function executeStep(step, mission, pqDir, projectDir, aiConfig, onChunk, 
     commandResults: [], warnings: [],
     summary, rawResponse: fullText, modelName, deliverable,
     verificationResults,
+    usage,
   }
 }
 

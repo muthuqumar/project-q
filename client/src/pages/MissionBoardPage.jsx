@@ -247,6 +247,64 @@ function LogEntry({ entry }) {
   )
 }
 
+function formatUSD(amount) {
+  if (!amount) return '$0.00'
+  if (amount < 0.01) return `$${amount.toFixed(4)}`
+  if (amount < 1)    return `$${amount.toFixed(3)}`
+  return `$${amount.toFixed(2)}`
+}
+
+const BASIS_LABEL = {
+  plan:   'from plan — coarse',
+  scope:  'refined after scoping',
+  design: 'refined after design',
+}
+
+function EstimateSummary({ estimate }) {
+  const [open, setOpen] = useState(false)
+  const total = estimate.total || { mid: 0, low: 0, high: 0 }
+  const bandPct = Math.round((estimate.band || 0) * 100)
+  const steps = estimate.byStep || []
+
+  return (
+    <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: steps.length ? 'pointer' : 'default' }}
+      >
+        <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', flex: 1 }}>
+          Estimated Cost
+        </div>
+        <div style={{ display: 'flex', gap: '10px', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+          <span
+            style={{ color: 'var(--accent)', fontWeight: 600 }}
+            title="Projected from published list prices before/while the mission runs. This is NOT your actual bill — token counts are estimated, not measured."
+          >
+            ~{formatUSD(total.mid)}
+          </span>
+          <span style={{ color: 'var(--text-secondary)' }}>{formatUSD(total.low)}–{formatUSD(total.high)}</span>
+          <span style={{ color: 'var(--text-muted)' }}>±{bandPct}%</span>
+        </div>
+      </div>
+      <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '4px', fontStyle: 'italic' }}>
+        Projection from list prices ({BASIS_LABEL[estimate.basis] || estimate.basis}) — an estimate, not actual billing. Narrows as scoping &amp; design complete.
+      </div>
+      {open && steps.length > 0 && (
+        <div style={{ marginTop: '10px', paddingLeft: '4px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          {steps.map((s) => (
+            <div key={s.stepId} style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+              <span style={{ color: 'var(--text-primary)' }}>{s.agentName || s.agentId} <span style={{ color: 'var(--text-muted)' }}>· {s.model}</span></span>
+              <span>
+                {(s.inputTokens + s.outputTokens).toLocaleString()} tok · <span style={{ color: 'var(--accent)' }}>~{formatUSD(s.costUSD)}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StepRow({ step, index, missionId }) {
   const [expanded, setExpanded] = useState(false)
   const [deliverableOpen, setDeliverableOpen] = useState(false)
@@ -758,6 +816,11 @@ function DetailPanel({ mission, onClose, onRefresh }) {
               )
             ))}
           </div>
+        )}
+
+        {/* Estimated cost (projection, not actual billing) */}
+        {mission.estimate && mission.estimate.total && (
+          <EstimateSummary estimate={mission.estimate} />
         )}
 
         {/* File changes */}

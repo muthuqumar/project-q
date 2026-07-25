@@ -18,12 +18,31 @@ const express = require('express')
 const router = express.Router()
 const { planMission } = require('../services/agents/orchestrator')
 const { executeStep } = require('../services/agents/executor')
+const { estimateMission } = require('../services/agents/estimator')
 const { ensureProjectContext, regenerateProjectContext } = require('../services/agents/context-guard')
 const {
   listMissions, getMission, createMission, updateMission, appendLog, deleteMission
 } = require('../services/agents/mission-store')
+const { formatUSD } = require('../services/ai/pricing')
 const fs = require('fs-extra')
 const path = require('path')
+
+/**
+ * Human-readable summary of a mission cost *estimate* (projection from list
+ * prices, not actual billing — the CLI path never reports real token usage).
+ */
+function formatEstimateSummary(estimate) {
+  if (!estimate || !estimate.total) return 'No cost estimate available.'
+  const { total, band, basis } = estimate
+  const perStep = (estimate.byStep || [])
+    .map(s => `  • ${s.agentName || s.agentId} (${s.model}): ~${formatUSD(s.costUSD)}  (in~${s.inputTokens.toLocaleString()}, out~${s.outputTokens.toLocaleString()})`)
+    .join('\n')
+  return [
+    `💰 Estimated total: ~${formatUSD(total.mid)}  (${formatUSD(total.low)}–${formatUSD(total.high)}, ±${Math.round(band * 100)}%)`,
+    `📊 Basis: ${basis} · list-price projection, not actual billing`,
+    `Breakdown:\n${perStep}`,
+  ].join('\n')
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -128,7 +147,8 @@ async function runPlanning(pqDir, projectDir, io, missionId, task, aiConfig, ans
     emit(io, 'updated', { id: missionId, status: 'planning', message: 'Orchestrator is planning...' })
     await appendLog(pqDir, missionId, { agent: 'Orchestrator', message: answeredQuestions.length > 0 ? `Re-planning with ${answeredQuestions.length} clarification(s)…` : 'Analysing task and codebase...', type: 'info' })
 
-    const plan = await planMission(task, pqDir, projectDir, aiConfig, answeredQuestions)
+    const planResult = await planMission(task, pqDir, projectDir, aiConfig, answeredQuestions)
+    const plan = planResult.plan
     const hasMissingInfo = plan.missingInfo && plan.missingInfo.length > 0
 
     const updated = await updateMission(pqDir, missionId, {
@@ -141,6 +161,16 @@ async function runPlanning(pqDir, projectDir, io, missionId, task, aiConfig, ans
       ],
       status: hasMissingInfo ? 'awaiting_info' : 'awaiting_approval',
     })
+
+    // Project cost from the plan (a coarse estimate, refined as scope.md /
+    // design.md land during execution).
+    if (!hasMissingInfo) {
+      try {
+        const estimate = await estimateMission(pqDir, missionId, projectDir, plan.steps)
+        await updateMission(pqDir, missionId, { estimate })
+        updated.estimate = estimate
+      } catch (e) { console.warn('[estimate] plan estimate failed:', e.message) }
+    }
 
     if (hasMissingInfo) {
       const newQCount = plan.missingInfo.length
@@ -253,7 +283,9 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
       }
 
       // Mark step complete
-      const updatedSteps = (await getMission(pqDir, missionId)).steps.map(s =>
+      const preStepMission = await getMission(pqDir, missionId)
+
+      const updatedSteps = preStepMission.steps.map(s =>
         s.id === step.id ? {
           ...s,
           status: 'complete',
@@ -270,8 +302,17 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
 
       await updateMission(pqDir, missionId, {
         steps: updatedSteps,
-        fileChanges: [...((await getMission(pqDir, missionId)).fileChanges || []), ...(result.appliedChanges || [])],
+        fileChanges: [...(preStepMission.fileChanges || []), ...(result.appliedChanges || [])],
       })
+
+      // Refine the cost estimate once a scoping/design deliverable exists.
+      if (step.agentId === 'mallory' || step.agentId === 'quartermaster') {
+        try {
+          const estimate = await estimateMission(pqDir, missionId, projectDir, updatedSteps)
+          await updateMission(pqDir, missionId, { estimate })
+          emit(io, 'updated', { id: missionId, estimate })
+        } catch (e) { console.warn('[estimate] refine failed:', e.message) }
+      }
 
       // Emit each file change
       for (const fc of result.appliedChanges || []) {
@@ -340,7 +381,36 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
     message: failed ? 'Mission failed' : `Mission complete — ${allFileChanges.length} file(s) changed`,
     type: failed ? 'error' : 'success'
   })
+
+  // ── Cost summary — always log a spend recap at the end of the mission ────
+  const finalMission = await getMission(pqDir, missionId)
+  const summaryText = formatEstimateSummary(finalMission?.estimate)
+  await appendLog(pqDir, missionId, {
+    agent: 'Orchestrator',
+    message: summaryText,
+    type: 'info',
+  })
+  console.log(`[mission ${missionId}] ${summaryText.replace(/\n/g, ' | ')}`)
+
   emit(io, 'complete', updated)
+}
+
+/**
+ * Backfill a cost estimate onto a mission that predates the estimator.
+ * Best-effort, computed once and persisted; later reads skip it. Completed
+ * missions get the most accurate (design-basis) estimate since their
+ * deliverables already exist on disk.
+ */
+async function backfillEstimate(pqDir, projectDir, mission) {
+  if (!mission || mission.estimate || !mission.steps || mission.steps.length === 0) return mission
+  try {
+    const estimate = await estimateMission(pqDir, mission.id, projectDir, mission.steps)
+    await updateMission(pqDir, mission.id, { estimate })
+    return { ...mission, estimate }
+  } catch (e) {
+    console.warn(`[estimate] backfill failed for ${mission.id}: ${e.message}`)
+    return mission
+  }
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -348,9 +418,11 @@ async function runExecution(pqDir, projectDir, io, missionId, aiConfig) {
 // GET /api/agents/missions
 router.get('/missions', async (req, res) => {
   const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
   try {
     const missions = await listMissions(pqDir)
-    res.json({ missions })
+    const withEstimates = await Promise.all(missions.map(m => backfillEstimate(pqDir, projectDir, m)))
+    res.json({ missions: withEstimates })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -359,9 +431,11 @@ router.get('/missions', async (req, res) => {
 // GET /api/agents/missions/:id
 router.get('/missions/:id', async (req, res) => {
   const pqDir = req.app.get('pqDir')
+  const projectDir = req.app.get('projectDir')
   try {
-    const mission = await getMission(pqDir, req.params.id)
+    let mission = await getMission(pqDir, req.params.id)
     if (!mission) return res.status(404).json({ error: 'Mission not found' })
+    mission = await backfillEstimate(pqDir, projectDir, mission)
     res.json({ mission })
   } catch (err) {
     res.status(500).json({ error: err.message })

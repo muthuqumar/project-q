@@ -101,7 +101,7 @@ project-q assigns models by agent role, not a single global model:
 
 | Role | Tier | Default (Anthropic) |
 |------|------|---------------------|
-| Orchestrator, Planner, Architect | Opus | `claude-opus-4-6` |
+| Orchestrator, Planner, Architect | Opus | `claude-opus-4-8` |
 | Implementer, QA, Reviewer | Sonnet | `claude-sonnet-4-6` |
 | Fast | Haiku | `claude-haiku-4-5` |
 

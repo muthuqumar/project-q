@@ -3,6 +3,7 @@ const { z } = require('zod')
 const fs = require('fs-extra')
 const path = require('path')
 const { execSync } = require('child_process')
+const { rankedSearch } = require('../retrieval/lexical')
 
 const IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.project-q'])
 
@@ -65,7 +66,7 @@ function buildTools(projectDir, onToolCall) {
     }),
 
     search_code: tool({
-      description: 'Search for a text pattern across project files',
+      description: 'Keyword/regex search across project files, ranked by match count (ripgrep). Use when you know the exact identifier, string, or pattern.',
       parameters: z.object({
         pattern: z.string().describe('Text or regex pattern to search for'),
         glob: z.string().describe('File glob to limit search, e.g. "**/*.ts"').optional(),
@@ -73,20 +74,12 @@ function buildTools(projectDir, onToolCall) {
       execute: async ({ pattern, glob }) => {
         notify('search_code', { pattern, glob })
         try {
-          const globArg = glob ? `--include="${glob}"` : ''
-          const cmd = `grep -r --line-number -l ${globArg} "${pattern.replace(/"/g, '\\"')}" . 2>/dev/null | head -20`
-          const result = execSync(cmd, { cwd: projectDir, encoding: 'utf8', timeout: 10000 })
-          if (!result.trim()) return 'No matches found'
-          const files = result.trim().split('\n').slice(0, 10)
-          const details = files.map(f => {
-            try {
-              const lines = execSync(`grep -n "${pattern.replace(/"/g, '\\"')}" "${f}" 2>/dev/null | head -5`, {
-                cwd: projectDir, encoding: 'utf8', timeout: 5000
-              })
-              return `### ${f}\n${lines}`
-            } catch { return `### ${f}` }
-          })
-          return details.join('\n\n')
+          const ranked = rankedSearch(pattern, projectDir, { glob })
+          if (!ranked.length) return 'No matches found'
+          return ranked.slice(0, 10).map(r =>
+            `### ${r.file}  (${r.count} match${r.count !== 1 ? 'es' : ''})\n` +
+            r.hits.map(h => `  ${h.line}: ${h.text}`).join('\n')
+          ).join('\n\n')
         } catch (e) {
           return `Search error: ${e.message}`
         }
