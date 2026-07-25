@@ -1,0 +1,104 @@
+server/services/retrieval/seed-extract.js
+  s_6d64796efbcad9::t_2a4d07c239a5e4 150
+  s_6d64796efbcad9::t_9bcdb1017e8594 1-108,110-111,124-149,151-263
+  s_6d64796efbcad9::t_c1f0b0239c3ff7 109,112-123
+server/services/ai/pricing.js
+  s_6d64796efbcad9::t_89dcfa5dee42a9 1-108
+server/services/agents/agent-tools.js
+  s_6d64796efbcad9::t_c4d50d1ac3a978 69,77-82
+  s_6d64796efbcad9::t_9d20abcf15f908 6
+server/services/agents/executor.js
+  s_6d64796efbcad9::t_fbce75c9cf2993 471
+  s_6d64796efbcad9::t_b07234ebfc749e 94-96
+  s_6d64796efbcad9::t_d264f94cf59565 259-264,266-268,270-274
+  s_6d64796efbcad9::t_d961ef8e019f9d 155
+  s_6d64796efbcad9::t_cc0da900513cda 169
+  s_6d64796efbcad9::t_15b3fce7a3502f 188
+  s_6d64796efbcad9::t_b981911089ed9d 265,269
+  s_6d64796efbcad9::t_ae11ded7729992 400
+  s_6d64796efbcad9::t_bf3ed1287dac86 89-93,97-111,356,391
+  s_6d64796efbcad9::t_c7c83c3f24cdbb 414-419,422-432
+  s_6d64796efbcad9::t_3ca97edd689bce 13
+  s_6d64796efbcad9::t_fff92c0c471a90 359-386
+  s_6d64796efbcad9::t_1a0823c90e0edf 215
+  s_6d64796efbcad9::t_27a8ac68b07388 232-252
+  s_6d64796efbcad9::t_79e9493bf73c02 287-306,387
+  s_6d64796efbcad9::t_0b5630559fa0d3 353-355
+  s_6d64796efbcad9::t_f0ae32784c5585 357-358
+  s_6d64796efbcad9::t_252631d2828e79 388-390
+  s_6d64796efbcad9::t_977d6096685810 392
+  s_6d64796efbcad9::t_24b95c1992d904 433
+  s_6d64796efbcad9::t_d381fd07b361e9 345-352,395,435,445-446,448-453,491-498,579,583,586,589,594,632
+server/routes/agents.js
+  s_6d64796efbcad9::t_2f840058bd1df4 387
+  s_6d64796efbcad9::t_d2fed7e1b1a2d7 31-43
+  s_6d64796efbcad9::t_1a5cc2734949b7 21
+  s_6d64796efbcad9::t_cb9a226a3f2e79 165-173
+  s_6d64796efbcad9::t_206e0ce09c220b 30,45,398-415,421,424-425,434,436,438
+  s_6d64796efbcad9::t_92508d9890b0c1 308-315
+  s_6d64796efbcad9::t_7b0826b1e33822 44
+  s_6d64796efbcad9::t_32e1a637b1ba82 46
+  s_6d64796efbcad9::t_a3719e64cb86b6 174
+  s_6d64796efbcad9::t_ed29fa4e53a3b4 316
+  s_6d64796efbcad9::t_da068604caebd9 384-386
+  s_6d64796efbcad9::t_8124b5d7cc3be0 388-390
+server/services/retrieval/retrieve.js
+  s_6d64796efbcad9::t_578bf290b41b64 1-3,5,10,13-16,19-24,31,34,36-40,42-43,45-52,55-56,59-66,118,135,147-149,153,178-180,182-184,195-198,201-204
+  s_6d64796efbcad9::t_d8141278698ce2 4,6-9,11-12,17-18,25-30,32-33,35,41,44,53-54,57-58,67-117,119-134,136-146,150-152,155-176,181,185-194,199-200,205-212
+  s_6d64796efbcad9::t_e0ce1da744d82f 154,177
+server/services/retrieval/graph.js
+  s_6d64796efbcad9::t_80bcbe3c5124e0 1-74,79-132
+  s_6d64796efbcad9::t_687f8363c89254 75-78
+server/services/agents/estimator.js
+  s_6d64796efbcad9::t_1d6ccde94ea7d2 1-149
+server/services/retrieval/lexical.js
+  s_6d64796efbcad9::t_38300b06ebcaae 1-81
+client/src/pages/MissionBoardPage.jsx
+  s_6d64796efbcad9::t_9f6a4f146af806 279-280,282,284,288-289
+  s_6d64796efbcad9::t_422efdef740103 821-823
+  s_6d64796efbcad9::t_825b9ec78e5235 255,257-276,281,283,285-286,290-298,306
+  s_6d64796efbcad9::t_a452f29642b8a4 252-254
+  s_6d64796efbcad9::t_6d2c6215e7cfa9 256
+  s_6d64796efbcad9::t_bdde5e6293f2d6 277-278
+  s_6d64796efbcad9::t_e1034b4386e00b 287
+  s_6d64796efbcad9::t_809b6eef05adb2 299-301,303-305
+  s_6d64796efbcad9::t_790fd4e37c92da 307
+  s_6d64796efbcad9::t_3e1c6d01e703d0 824-825
+  s_6d64796efbcad9::t_9948ae0875b5e5 250-251,302
+server/services/ai/model-factory.js
+  s_6d64796efbcad9::t_238e26cdf422cc 40-48,50
+  s_6d64796efbcad9::t_d2035dab65be14 7-10
+  s_6d64796efbcad9::t_45468b06b2542c 77,80
+  s_6d64796efbcad9::t_c23251871a7a41 67
+  s_6d64796efbcad9::t_d31d3f63bb6d1b 12,19,22,29
+README.md
+  s_6d64796efbcad9::t_62b6a1b9eb5f2f 104
+server/public/index.html
+  s_6d64796efbcad9::t_ee465819675547 10
+server/services/agents/orchestrator.js
+  s_137cc5ddaaf43b::t_4f2f860e88efd4 21,26,30-32,34-35,40-46,52,192-212,218-219,221-225,230-235,237-246,249,262-268
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "638ab6365e6acb1115cd5fe4243140b29026436b",
+  "prompts": {},
+  "sessions": {
+    "s_137cc5ddaaf43b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb8cd178-81fc-43cf-bf36-369bcbf774bb",
+        "model": "unknown"
+      },
+      "human_author": "Muthu Qumar S <muthuqumar.s@gmail.com>"
+    },
+    "s_6d64796efbcad9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46c8f4c5-ffa3-4558-ac3b-2096e12840d6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Muthu Qumar S <muthuqumar.s@gmail.com>"
+    }
+  }
+}
